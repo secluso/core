@@ -808,9 +808,30 @@ fn rocket() -> _ {
     let pairing_state: SharedPairingState = Arc::new(Mutex::new(HashMap::new()));
     let failure_store: FailStore = Arc::new(DashMap::new());
 
+    let mut network_type: Option<String> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--network-type" {
+            if let Some(value) = args.next() {
+                network_type = Some(value);
+            }
+        } else if let Some(value) = arg.strip_prefix("--network-type=") {
+            network_type = Some(value.to_string());
+        }
+    }
+
+    let address = match network_type.as_deref() {
+        Some("http") => "0.0.0.0",
+        Some("https") | None => "127.0.0.1",
+        Some(other) => {
+            eprintln!("Unknown --network-type={other}. Use http or https.");
+            "127.0.0.1"
+        }
+    };
+
     let config = rocket::Config {
         port: 8000,
-        address: "127.0.0.1".parse().unwrap(),
+        address: address.parse().unwrap(),
         ..rocket::Config::default()
     };
 
