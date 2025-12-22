@@ -6,6 +6,8 @@
   import {
     testServerSsh,
     provisionServer,
+    checkRequirements,
+    type RequirementStatus,
     type SshTarget,
     type ServerPlan
   } from "$lib/api";
@@ -61,6 +63,11 @@
   let errorMsg = "";
   let testResult: "ok" | "error" | null = null;
   let testMessage = "";
+  let requirements: RequirementStatus[] = [];
+  let missingRequirements: RequirementStatus[] = [];
+  let checkingRequirements = true;
+  $: dockerMissing = missingRequirements.some((req) => req.name === "Docker");
+  $: buildxMissing = missingRequirements.some((req) => req.name === "Docker Buildx");
 
   function goBack() {
     goto("/");
@@ -111,6 +118,14 @@
     errorMsg = "";
     testResult = null;
     testMessage = "";
+    if (checkingRequirements) {
+      errorMsg = "Checking required tools. Try again in a moment.";
+      return;
+    }
+    if (missingRequirements.length > 0) {
+      errorMsg = `Missing required tools: ${missingRequirements.map((req) => req.name).join(", ")}.`;
+      return;
+    }
     const err = validateTarget();
     if (err) { errorMsg = err; return; }
 
@@ -145,6 +160,14 @@
 
   async function onProvision() {
     errorMsg = "";
+    if (checkingRequirements) {
+      errorMsg = "Checking required tools. Try again in a moment.";
+      return;
+    }
+    if (missingRequirements.length > 0) {
+      errorMsg = `Missing required tools: ${missingRequirements.map((req) => req.name).join(", ")}.`;
+      return;
+    }
     const tErr = validateTarget();
     if (tErr) { errorMsg = tErr; return; }
     if (!serviceAccountKeyPath.trim()) { errorMsg = "Service account key is required."; return; }
@@ -271,6 +294,18 @@
     firstTimeOn = !firstTimeOn;
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
   }
+
+  onMount(async () => {
+    try {
+      requirements = await checkRequirements();
+      missingRequirements = requirements.filter((req) => !req.ok);
+    } catch {
+      requirements = [];
+      missingRequirements = [];
+    } finally {
+      checkingRequirements = false;
+    }
+  });
 </script>
 
 <main class="wrap">
@@ -288,6 +323,43 @@
     <h1>Provision Server (SSH)</h1>
     <div class="spacer"></div>
   </header>
+
+  {#if checkingRequirements}
+    <section class="card requirements">
+      <h2>Setup checks</h2>
+      <p class="muted">Checking local tools…</p>
+    </section>
+  {:else if missingRequirements.length > 0}
+    <section class="card requirements">
+      <h2>Missing tools</h2>
+      <ul class="req-list">
+        {#each missingRequirements as req}
+          <li class="req-item">
+            <span class="req-name">{req.name}</span>
+            <span class="req-status missing">Missing</span>
+            <span class="req-detail">{req.hint}</span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
+  {#if dockerMissing || buildxMissing}
+    <section class="card requirements">
+      <h2>Install Docker</h2>
+      <p class="muted">Docker is required to continue.</p>
+      <ul class="req-steps">
+        <li>Windows: install Docker Desktop and enable the WSL 2 backend.</li>
+        <li>macOS: install Docker Desktop for Mac.</li>
+        <li>Linux: install Docker Engine and the Buildx plugin.</li>
+      </ul>
+      <div class="req-links">
+        <a href="https://docs.docker.com/desktop/install/windows-install/">Windows install guide</a>
+        <a href="https://docs.docker.com/desktop/install/mac-install/">macOS install guide</a>
+        <a href="https://docs.docker.com/engine/install/">Linux install guide</a>
+      </div>
+    </section>
+  {/if}
 
   {#if firstTimeOn}
     <section class="card">
@@ -357,7 +429,7 @@
     </div>
 
     <div class="actions">
-      <button class="secondary" type="button" on:click={onTest} disabled={testing || provisioning}>
+      <button class="secondary" type="button" on:click={onTest} disabled={testing || provisioning || checkingRequirements || missingRequirements.length > 0}>
         {testing ? "Testing…" : "Test Connection"}
       </button>
     </div>
@@ -397,7 +469,7 @@
   {#if errorMsg}<div class="alert error">{errorMsg}</div>{/if}
 
   <div class="actions bottom">
-    <button class="primary" type="button" on:click={onProvision} disabled={provisioning || testing}>
+    <button class="primary" type="button" on:click={onProvision} disabled={provisioning || testing || checkingRequirements || missingRequirements.length > 0}>
       {provisioning ? "Provisioning…" : "Provision Server"}
     </button>
   </div>
@@ -424,6 +496,17 @@
 .label-row { display: flex; align-items: center; gap: 10px; }
 .help-link { font-size: 0.9rem; color: #396cd8; text-decoration: none; }
 .help-link:hover { text-decoration: underline; }
+.requirements h2 { margin: 0 0 10px 0; }
+.req-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.req-item { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; }
+.req-name { font-weight: 600; }
+.req-status.missing { color: #b91c1c; font-weight: 700; font-size: 0.92rem; }
+.req-detail { grid-column: 1 / -1; color: #666; font-size: 0.9rem; }
+.req-steps { margin: 6px 0 10px; padding-left: 18px; color: #555; }
+.req-steps li { margin: 4px 0; }
+.req-links { display: flex; flex-wrap: wrap; gap: 10px; }
+.req-links a { color: #396cd8; text-decoration: none; font-size: 0.95rem; }
+.req-links a:hover { text-decoration: underline; }
 button { border: 1px solid #d7d7d7; background: #fff; color: #111; padding: 10px 14px; border-radius: 10px; cursor: pointer; }
 button:hover { border-color: #c6c6c6; }
 button.primary { background: #396cd8; color: #fff; border-color: #396cd8; }
