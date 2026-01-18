@@ -39,7 +39,7 @@ mod fcm;
 mod security;
 
 use crate::auth::{initialize_users, BasicAuth, FailStore};
-use crate::fcm::send_notification;
+use crate::fcm::{send_notification, ConfigResponse};
 use crate::security::check_path_sandboxed;
 
 // Per-user livestream start state
@@ -786,6 +786,15 @@ async fn retrieve_config_response(camera: &str, auth: BasicAuth) -> Option<RawTe
     None
 }
 
+#[allow(dead_code)]
+#[get("/fcm_config")]
+async fn retrieve_fcm_data(
+    state: &rocket::State<ConfigResponse>,
+    _auth: BasicAuth,
+) -> Json<&ConfigResponse> {
+    Json(state.inner())
+}
+
 #[post("/debug_logs", data = "<data>")]
 async fn upload_debug_logs(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
@@ -835,11 +844,15 @@ fn rocket() -> _ {
         ..rocket::Config::default()
     };
 
+    // Fetch the relevant app FCM data and store globally for future requests asking for it
+    let fcm_config = fcm::fetch_config().expect("Failed to fetch config");
+
     rocket::custom(config)
         .manage(all_event_state)
         .manage(initialize_users())
         .manage(failure_store)
         .manage(pairing_state)
+        .manage(fcm_config)
         .mount(
             "/",
             routes![
@@ -861,6 +874,7 @@ fn rocket() -> _ {
                 config_response,
                 retrieve_config_response,
                 upload_debug_logs,
+                retrieve_fcm_data,
             ],
         )
 }
