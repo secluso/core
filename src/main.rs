@@ -21,7 +21,7 @@ use rocket::response::content::RawText;
 use rocket::response::stream::{Event, EventStream};
 use rocket::serde::json::Json;
 use rocket::serde::Deserialize;
-use rocket::tokio;
+use rocket::{Request, Response, tokio};
 use rocket::tokio::fs::{self, File};
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{channel, Sender};
@@ -33,6 +33,8 @@ use serde::Serialize;
 use serde_json::Number;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use rocket::fairing::{Fairing, Info, Kind};
+use rocket::http::Header;
 
 mod auth;
 mod fcm;
@@ -41,6 +43,30 @@ mod security;
 use crate::auth::{initialize_users, BasicAuth, FailStore};
 use crate::fcm::{send_notification, ConfigResponse};
 use crate::security::check_path_sandboxed;
+
+// Store the version of the current crate, which we'll use in all responses.
+#[derive(Default, Clone)]
+struct ServerVersionHeader {
+    version: String,
+}
+
+#[rocket::async_trait]
+impl Fairing for ServerVersionHeader {
+    // Information provided to rocket to determine set of callbacks we're registering for.
+    fn info(&self) -> Info {
+        Info {
+            name: "Add Server Version headers to all responses",
+            kind: Kind::Response,
+        }
+    }
+
+    // Response callback - we want to intercept and add the X-Server-Version to each response. This will allow us to do compatability checks in the app.
+    async fn on_response<'r>(&self, _request: &'r Request<'_>, response: &mut Response<'r>) {
+        let header = Header::new("X-Server-Version", self.version.clone());
+        response.set_header(header); // Modify the request with the new header
+    }
+}
+
 
 // Per-user livestream start state
 #[derive(Clone)]
@@ -89,6 +115,12 @@ struct PairingRequest {
 #[derive(serde::Serialize)]
 struct PairingResponse {
     status: String,
+}
+
+// Store whether the server is OK and the current version. Allows sanity check from the mobile app.
+#[derive(serde::Serialize)]
+struct ServerStatus {
+    ok: bool,
 }
 
 type SharedPairingState = Arc<Mutex<HashMap<String, Arc<Mutex<PairingEntry>>>>>;
@@ -786,13 +818,23 @@ async fn retrieve_config_response(camera: &str, auth: BasicAuth) -> Option<RawTe
     None
 }
 
-#[allow(dead_code)]
 #[get("/fcm_config")]
 async fn retrieve_fcm_data(
     state: &rocket::State<ConfigResponse>,
     _auth: BasicAuth,
 ) -> Json<&ConfigResponse> {
     Json(state.inner())
+}
+
+#[get("/status")]
+async fn retrieve_server_status(
+    _auth: BasicAuth,
+) -> Json<ServerStatus> {
+    let server_status = ServerStatus {
+        ok: true,
+    };
+
+    Json(server_status)
 }
 
 #[post("/debug_logs", data = "<data>")]
@@ -848,6 +890,9 @@ fn rocket() -> _ {
     let fcm_config = fcm::fetch_config().expect("Failed to fetch config");
 
     rocket::custom(config)
+        .attach(ServerVersionHeader {
+            version: env!("CARGO_PKG_VERSION").to_string(), // Fetch the version of this crate
+        })
         .manage(all_event_state)
         .manage(initialize_users())
         .manage(failure_store)
@@ -875,6 +920,7 @@ fn rocket() -> _ {
                 retrieve_config_response,
                 upload_debug_logs,
                 retrieve_fcm_data,
+                retrieve_server_status,
             ],
         )
 }
