@@ -1,0 +1,9 @@
+[package]
+name = "secluso-ambient"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+linux-embedded-hal = "0.4"
+embedded-hal = "1.0"

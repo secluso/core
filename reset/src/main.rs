@@ -138,7 +138,7 @@ fn send_debug_logs_action() {
 
 fn main() {
     let button_pin_number = 16;
-    let led_pin_number = 25;
+    let led_pin_number = 24;
 
     let gpio = Gpio::new().expect("Failed to initialize GPIO");
 
