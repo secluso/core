@@ -2,53 +2,66 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use rppal::gpio::{Gpio, OutputPin};
-use std::env;
-use std::process;
-use std::thread;
-use std::time::Duration;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use embedded_hal::i2c::I2c;
 use linux_embedded_hal::I2cdev;
+use rppal::gpio::{Gpio, OutputPin};
+use rppal::pwm::{Channel, Polarity, Pwm};
+use std::{thread, time::Duration};
+
+// ----------------- Shared I2C -----------------
+
+const I2C_BUS: &str = "/dev/i2c-1";
+
+// ----------------- TMP1075 (overtemp ALERT gating) -----------------
+
+const TMP1075_ADDR_7BIT: u8 = 0x48;
+
+// TMP1075 register pointers
+const REG_TEMP: u8 = 0x00;
+const REG_CONFIG: u8 = 0x01;
+const REG_TLOW: u8 = 0x02;
+const REG_THIGH: u8 = 0x03;
+
+// CONFIG[15:8] = OS R1 R0 F1 F0 POL TM SD
+// Comparator mode (TM=0), active-low (POL=0), continuous (SD=0), 1-fault (F1:F0=00)
+const CONFIG_HIGH_BYTE: u8 = 0x00;
+
+// Customize these:
+const THIGH_C: f32 = 80.0;
+const TLOW_C: f32 = 60.0;
+
+// ----------------- TPS61161 PWM (IR LED enable/dim) -----------------
+
+const PWM_FREQ_HZ: f64 = 10_000.0;
+// Your working mapping:
+const PWM_CHANNEL: Channel = Channel::Pwm1;
+
+// GPIO13 is the hardware PWM pin used to drive TPS61161 CTRL through the AND gate
+const GPIO13: u8 = 13;
 
 // ----------------- IR/IR cut filter -----------------
 
 const IN1_PIN: u8 = 17;      // BCM numbering
 const IN2_PIN: u8 = 27;      // BCM numbering
 const SLEEP_PIN: u8 = 4;     // 1=enable bridge, 0=disable bridge
-const IR_PIN: u8 = 21;       // 1=disable IR (day mode), 0=enable IR (night mode)
 const PULSE_MS: u64 = 120;
 
 struct IrCut {
     in1: OutputPin,
     in2: OutputPin,
     sleep: OutputPin,
-    ir: OutputPin,
 }
 
 impl IrCut {
-    fn new(gpio: &Gpio, ir_on: bool) -> anyhow::Result<Self> {
+    fn new(gpio: &Gpio) -> anyhow::Result<Self> {
         let in1 = gpio.get(IN1_PIN)?.into_output_low();
         let in2 = gpio.get(IN2_PIN)?.into_output_low();
         let sleep = gpio.get(SLEEP_PIN)?.into_output_low();
-
-        // Initialize EN to desired final level immediately.
-        let mut ir = if ir_on {
-            gpio.get(IR_PIN)?.into_output_high()
-        } else {
-            gpio.get(IR_PIN)?.into_output_low()
-        };
-
-        // Keep the state after program exit (prevents flicker / reversion).
-        ir.set_reset_on_drop(false);
-
-        Ok(Self { in1, in2, sleep, ir })
+        Ok(Self { in1, in2, sleep })
     }
 
     fn night(&mut self) {
-        // Enable IR first to avoid glitches.
-        self.ir.set_high();
-
         // Enable bridge driver IC
         self.in1.set_low();
         self.in2.set_low();
@@ -83,9 +96,6 @@ impl IrCut {
 
         // Disable bridge driver IC
         self.sleep.set_low();
-
-        // Disable IR last.
-        self.ir.set_low();
     }
 }
 
@@ -95,8 +105,8 @@ const AMBIENT_ADDR: u8 = 0x52;
 
 // Register map (APDS-9306 / APDS-9306-065)
 const REG_MAIN_CTRL: u8 = 0x00;      // ALS_EN is bit 1
-const REG_ALS_MEAS_RATE: u8 = 0x04;  // default 0x22
-const REG_ALS_GAIN: u8 = 0x05;       // default 0x01 (gain 3)
+//const REG_ALS_MEAS_RATE: u8 = 0x04;  // default 0x22
+//const REG_ALS_GAIN: u8 = 0x05;       // default 0x01 (gain 3)
 const REG_PART_ID: u8 = 0x06;        // APDS-9306-065 default 0xB3
 const REG_MAIN_STATUS: u8 = 0x07;    // ALS data status bit indicates new data
 const REG_ALS_DATA_0: u8 = 0x0D;     // 0x0D..0x0F = 20-bit ALS result (LSB aligned)
@@ -120,26 +130,6 @@ fn read_als_20bit<I: I2c>(i2c: &mut I) -> core::result::Result<u32, I::Error> {
     Ok(raw)
 }
 
-// ----------------- Temperature sensor -----------------
-
-const TEMP_ADDR: u8 = 0x48;      // TMP1075 default address
-const REG_TEMP: u8 = 0x00;   // Temperature register
-
-fn read_temp_raw<I: I2c>(i2c: &mut I) -> core::result::Result<i16, I::Error> {
-    let mut b = [0u8; 2];
-    i2c.write_read(TEMP_ADDR, &[REG_TEMP], &mut b)?;
-
-    let raw = i16::from_be_bytes(b);
-
-    // 12-bit value in upper bits
-    Ok(raw >> 4)
-}
-
-fn read_temp_c<I: I2c>(i2c: &mut I) -> core::result::Result<f32, I::Error> {
-    let raw12 = read_temp_raw(i2c)?;
-    Ok(raw12 as f32 / 16.0)
-}
-
 // ----------------- Main -----------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,19 +141,28 @@ enum Mode {
 const LIGHT_THRESHOLD: u32 = 40;
 const REQUIRED_CONSECUTIVE: u8 = 3;
 
-const TEMP_THRESHOLD_C: f32 = 90.0;
-
 fn main() -> Result<()> {
     // --- Init GPIO + IR Cut ---
     let gpio = Gpio::new()?;
 
     // Start in DAY mode: IR disabled initially.
-    let mut ir = IrCut::new(&gpio, false)?;
+    let mut ircut = IrCut::new(&gpio)?;
     let mut mode = Mode::Day;
-    ir.day();
+    ircut.day();
+
+    // Keep PWM handle here; Some(pwm) means IR LEDs ON.
+    let mut ir_led_pwm: Option<Pwm> = None;
 
     // --- Init I2C bus & sensors ---
-    let mut i2c = I2cdev::new("/dev/i2c-1")?;
+    let mut i2c = I2cdev::new(I2C_BUS)?;
+
+    // Configure TMP1075 ALERT gating
+    configure_tmp1075_alert(&mut i2c).context("configure TMP1075")?;
+
+    // Read temperature once
+    if let Ok(t) = read_temp_c(&mut i2c, TMP1075_ADDR_7BIT) {
+        eprintln!("TMP1075 temp: {:.3} °C", t);
+    }
 
     // Sanity: read Part ID (APDS-9306-065 typically reads 0xB3)
     let part_id = als_read_u8(&mut i2c, REG_PART_ID)?;
@@ -189,14 +188,13 @@ fn main() -> Result<()> {
         // --- Read sensors ---
         let status = als_read_u8(&mut i2c, REG_MAIN_STATUS)?;
         let als = read_als_20bit(&mut i2c)?;
-        let temp_c = read_temp_c(&mut i2c)?;
 
         // MAIN_STATUS bit 3 indicates "new data not yet read" (per datasheet).
         let new_data = (status & (1 << 3)) != 0;
 
         println!(
-            "Mode={:?} MAIN_STATUS=0x{:02X} new_data={} ALS(raw20)={} Temp={:.2}°C",
-            mode, status, new_data, als, temp_c
+            "Mode={:?} MAIN_STATUS=0x{:02X} new_data={} ALS(raw20)={}",
+            mode, status, new_data, als
         );
 
         // --- Light-based hysteresis counters ---
@@ -208,19 +206,23 @@ fn main() -> Result<()> {
             below_cnt = 0;
         }
 
-        // --- Mode switching logic with temperature constraints ---
-
+        // --- Mode switching logic ---
         match mode {
             Mode::Day => {
                 // Switch to NIGHT only if:
-                //  - dark for REQUIRED_CONSECUTIVE readings AND
-                //  - temp < TEMP_THRESHOLD_C
-                if below_cnt >= REQUIRED_CONSECUTIVE && temp_c < TEMP_THRESHOLD_C {
+                //  - dark for REQUIRED_CONSECUTIVE readings
+                if below_cnt >= REQUIRED_CONSECUTIVE {
                     println!(
-                        "Condition met for DAY -> NIGHT: ALS<{} for {} readings AND Temp<{:.1}°C",
-                        LIGHT_THRESHOLD, REQUIRED_CONSECUTIVE, TEMP_THRESHOLD_C
+                        "Condition met for DAY -> NIGHT: ALS<{} for {} readings",
+                        LIGHT_THRESHOLD, REQUIRED_CONSECUTIVE
                     );
-                    ir.night();
+
+                    // Switch IR-cut to night mode
+                    ircut.night();
+
+                    // Turn IR LEDs ON (enable PWM)
+                    ir_led_pwm = Some(enable_ir_led_pwm()?);
+
                     mode = Mode::Night;
                     below_cnt = 0;
                     thread::sleep(Duration::from_millis(100));
@@ -230,21 +232,19 @@ fn main() -> Result<()> {
             }
             Mode::Night => {
                 // Switch to DAY if:
-                //  - bright for REQUIRED_CONSECUTIVE readings OR
-                //  - temp > TEMP_THRESHOLD_C
-                let bright_enough = above_cnt >= REQUIRED_CONSECUTIVE;
-                let too_hot = temp_c > TEMP_THRESHOLD_C;
-
-                if bright_enough || too_hot {
+                //  - bright for REQUIRED_CONSECUTIVE readings
+                if above_cnt >= REQUIRED_CONSECUTIVE {
                     println!(
-                        "Condition met for NIGHT -> DAY: (ALS>={} for {} readings = {}) OR (Temp>{:.1}°C = {})",
-                        LIGHT_THRESHOLD,
-                        REQUIRED_CONSECUTIVE,
-                        bright_enough,
-                        TEMP_THRESHOLD_C,
-                        too_hot
+                        "Condition met for NIGHT -> DAY: ALS>={} for {} readings",
+                        LIGHT_THRESHOLD, REQUIRED_CONSECUTIVE
                     );
-                    ir.day();
+
+                    // Turn IR LEDs OFF
+                    disable_ir_led_pwm(&mut ir_led_pwm)?;
+
+                    // Switch IR-cut to day mode
+                    ircut.day();
+
                     mode = Mode::Day;
                     above_cnt = 0;
                     light_threshold_offset = 0;
@@ -252,35 +252,79 @@ fn main() -> Result<()> {
             }
         }
 
+        // Log temp
+        if let Ok(t) = read_temp_c(&mut i2c, TMP1075_ADDR_7BIT) {
+            eprintln!("TMP1075 temp: {:.3} °C", t);
+        }
+
         // One full iteration per second
         thread::sleep(Duration::from_secs(1));
     }
 }
 
-//fn main() -> anyhow::Result<()> {
-//    let args: Vec<String> = env::args().collect();
-//    if args.len() != 2 {
-//        eprintln!("Usage: {} <0|1>   (0=night mode, 1=day mode)", args[0]);
-//        process::exit(1);
-//    }
-//
-//    let ir_on = match args[1].trim() {
-//        "0" => true,  // night mode
-//        "1" => false, // day mode
-//        other => {
-//            eprintln!("Invalid '{}'. Use 0 or 1.", other);
-//            process::exit(1);
-//        }
-//    };
-//
-//    let gpio = Gpio::new()?;
-//    let mut ir = IrCut::new(&gpio, ir_on)?;
-//
-//    match args[1].as_str() {
-//        "0" => ir.night(),
-//        "1" => ir.day(),
-//        _ => unreachable!(),
-//    }
-//
-//    Ok(())
-//}
+// ----------------- TMP1075 helpers -----------------
+
+fn configure_tmp1075_alert(i2c: &mut I2cdev) -> Result<()> {
+    i2c_write(i2c, TMP1075_ADDR_7BIT, &[REG_CONFIG, CONFIG_HIGH_BYTE])
+        .context("write TMP1075 config")?;
+
+    let t_low_reg = tmp1075_thresh_reg_from_c(TLOW_C);
+    let t_high_reg = tmp1075_thresh_reg_from_c(THIGH_C);
+
+    write_u16_be(i2c, TMP1075_ADDR_7BIT, REG_TLOW, t_low_reg).context("write TLOW")?;
+    write_u16_be(i2c, TMP1075_ADDR_7BIT, REG_THIGH, t_high_reg).context("write THIGH")?;
+
+    Ok(())
+}
+
+fn i2c_write<I: I2c>(i2c: &mut I, addr: u8, bytes: &[u8]) -> Result<()> {
+    i2c.write(addr, bytes)
+        .map_err(|e| anyhow::anyhow!("{:?}", e))
+}
+
+fn write_u16_be<I: I2c>(i2c: &mut I, addr: u8, reg: u8, val: u16) -> Result<()> {
+    let msb = ((val >> 8) & 0xFF) as u8;
+    let lsb = (val & 0xFF) as u8;
+    i2c_write(i2c, addr, &[reg, msb, lsb])
+}
+
+fn read_temp_c<I: I2c>(i2c: &mut I, addr: u8) -> Result<f32> {
+    let mut buf = [0u8; 2];
+    i2c.write_read(addr, &[REG_TEMP], &mut buf)
+        .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+
+    let raw = u16::from_be_bytes(buf);
+    let t12 = (raw >> 4) as i16;
+    let signed = if (t12 & 0x0800) != 0 { t12 | !0x0FFF } else { t12 };
+    Ok((signed as f32) * 0.0625)
+}
+
+fn tmp1075_thresh_reg_from_c(temp_c: f32) -> u16 {
+    let raw = (temp_c * 16.0).round() as i16; // 0.0625°C => *16
+    (raw as u16) << 4
+}
+
+// ----------------- IR LED PWM helpers -----------------
+
+fn enable_ir_led_pwm() -> Result<Pwm> {
+    let pwm = Pwm::with_frequency(PWM_CHANNEL, PWM_FREQ_HZ, 1.0, Polarity::Normal, true)
+        .context("enable PWM on GPIO13")?;
+    eprintln!("IR LEDs ON (PWM {} Hz, 100% duty)", PWM_FREQ_HZ);
+    Ok(pwm)
+}
+
+fn disable_ir_led_pwm(ir_led_pwm: &mut Option<Pwm>) -> Result<()> {
+    *ir_led_pwm = None;
+    ir_led_off()?;
+    eprintln!("IR LEDs OFF");
+    Ok(())
+}
+
+// Force CTRL low long enough to ensure TPS61161 enters shutdown (>2.5ms low)
+fn ir_led_off() -> Result<()> {
+    let gpio = Gpio::new().context("open GPIO for IR off")?;
+    let mut pin = gpio.get(GPIO13).context("get GPIO13")?.into_output_low();
+    thread::sleep(Duration::from_millis(3));
+    pin.set_low();
+    Ok(())
+}
