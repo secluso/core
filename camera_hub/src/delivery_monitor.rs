@@ -3,7 +3,6 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -64,7 +63,7 @@ pub struct DeliveryMonitor {
 
 impl DeliveryMonitor {
     pub fn from_file_or_new(video_dir: String, thumbnail_dir: String, state_dir: String) -> Self {
-        let d_files = MlsClient::get_state_files_sorted(&state_dir, "delivery_monitor_").unwrap();
+        let d_files = Self::get_state_files_sorted(&state_dir, "delivery_monitor_").unwrap();
         for f in &d_files {
             let pathname = state_dir.clone() + "/" + f;
             let file = fs::File::open(pathname).expect("Could not open file");
@@ -90,6 +89,27 @@ impl DeliveryMonitor {
         }
     }
 
+    fn get_state_files_sorted(dir_path: &str, pattern: &str) -> std::io::Result<Vec<String>> {
+        let mut matching_files: Vec<(String, u128)> = Vec::new();
+
+        for entry in fs::read_dir(dir_path)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let file_name_str = file_name.to_string_lossy();
+
+            if file_name_str.starts_with(pattern) {
+                if let Some(timestamp) = Self::extract_timestamp(&file_name_str, pattern) {
+                    matching_files.push((file_name_str.to_string(), timestamp));
+                }
+            }
+        }
+
+        matching_files.sort_by(|a, b| b.1.cmp(&a.1));
+        let sorted_files: Vec<String> = matching_files.into_iter().map(|(name, _)| name).collect();
+
+        Ok(sorted_files)
+    }
+
     /// See the notes for save_groups_state() in client_lib/src/user.rs
     /// about the algorithm used to determine file names.
     pub fn save_state(&self) {
@@ -105,7 +125,7 @@ impl DeliveryMonitor {
 
         //delete old state files
         let d_files =
-            MlsClient::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
+            Self::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
         assert!(d_files[0] == "delivery_monitor_".to_owned() + &current_timestamp.to_string());
         for f in &d_files[1..] {
             let _ = fs::remove_file(self.state_dir.clone() + "/" + f);
@@ -285,7 +305,7 @@ impl DeliveryMonitor {
     }
 
     fn latest_state_timestamp(state_dir: &str, pattern: &str) -> Option<u128> {
-        let files = MlsClient::get_state_files_sorted(state_dir, pattern).ok()?;
+        let files = Self::get_state_files_sorted(state_dir, pattern).ok()?;
         let first = files.first()?;
         Self::extract_timestamp(first, pattern)
     }

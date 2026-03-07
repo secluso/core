@@ -19,7 +19,7 @@ pub fn process_config_command(
     debug!("Processing config command");
     match clients[CONFIG].decrypt(enc_config_command.to_vec(), true) {
         Ok(command) => {
-            clients[CONFIG].save_group_state();
+            clients[CONFIG].save_group_state().unwrap();
             match command[0] {
                 OPCODE_HEARTBEAT_REQUEST => {
                     debug!("Handling heartbeat request");
@@ -30,11 +30,11 @@ pub fn process_config_command(
                         delivery_monitor,
                     )?;
                     Ok(())
-                }
+                },
                 _ => {
                     error!("Error: Unknown config command opcode!");
                     Ok(())
-                }
+                },
             }
         }
         Err(e) => {
@@ -86,7 +86,7 @@ fn send_heartbeat_response(
     config_msg.extend(bincode::serialize(&heartbeat).unwrap());
 
     let config_msg_enc = clients[CONFIG].encrypt(&config_msg)?;
-    clients[CONFIG].save_group_state();
+    clients[CONFIG].save_group_state().unwrap();
 
     http_client.config_response(&clients[CONFIG].get_group_name().unwrap(), config_msg_enc)?;
 

@@ -5,8 +5,6 @@
 //! Based on the OpenMLS client (openmls/cli).
 //! MIT License.
 
-use std::collections::HashMap;
-
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use std::fs;
@@ -15,7 +13,7 @@ use std::io::{BufRead, BufReader, Write};
 use super::openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto;
 
 pub struct Identity {
-    pub(crate) kp: HashMap<Vec<u8>, KeyPackage>,
+    pub(crate) kp: KeyPackage,
     pub(crate) credential_with_key: CredentialWithKey,
     pub(crate) signer: SignatureKeyPair,
 }
@@ -71,26 +69,18 @@ impl Identity {
             .unwrap();
 
         Self {
-            kp: HashMap::from([(
-                key_package
-                    .key_package()
-                    .hash_ref(crypto.crypto())
-                    .unwrap()
-                    .as_slice()
-                    .to_vec(),
-                key_package.key_package().clone(),
-            )]),
+            kp: key_package.key_package().clone(),
             credential_with_key,
             signer: signature_keys,
         }
     }
 
-    /// Create an additional key package using the credential_with_key/signer bound to this identity
-    pub fn add_key_package(
+    /// Create a new key package using the credential_with_key/signer bound to this identity and replace the old one.
+    pub fn update_key_package(
         &mut self,
         ciphersuite: Ciphersuite,
         crypto: &OpenMlsRustPersistentCrypto,
-    ) -> KeyPackage {
+    ) {
         let key_package = KeyPackage::builder()
             .build(
                 ciphersuite,
@@ -100,16 +90,7 @@ impl Identity {
             )
             .unwrap();
 
-        self.kp.insert(
-            key_package
-                .key_package()
-                .hash_ref(crypto.crypto())
-                .unwrap()
-                .as_slice()
-                .to_vec(),
-            key_package.key_package().clone(),
-        );
-        key_package.key_package().clone()
+        self.kp = key_package.key_package().clone();
     }
 
     /// Get the plain identity as byte vector.

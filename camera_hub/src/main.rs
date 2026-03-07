@@ -11,9 +11,10 @@ extern crate serde_derive;
 use cfg_if::cfg_if;
 use docopt::Docopt;
 use secluso_client_lib::http_client::HttpClient;
-use secluso_client_lib::mls_client::MlsClient;
+use secluso_client_lib::mls_client::{MlsClient, ClientType};
 use secluso_client_lib::mls_clients::{
-    MlsClients, CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
+    MlsClients, CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS,
+    MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
 };
 use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 use std::array;
@@ -245,7 +246,7 @@ fn reset(camera: &dyn Camera, reset_full: bool) -> io::Result<()> {
         );
 
         // First, clean up MLS users
-        match MlsClient::new(camera_name, first_time, state_dir.clone(), tag.to_string()) {
+        match MlsClient::new(camera_name, first_time, state_dir.clone(), tag.to_string(), ClientType::Camera) {
             Ok(mut client) => match client.clean() {
                 Ok(_) => {
                     info!("{} client cleaned successfully.", tag)
@@ -313,6 +314,7 @@ pub fn initialize_mls_clients(camera: &dyn Camera, first_time: bool) -> MlsClien
             first_time,
             camera.get_state_dir(),
             MLS_CLIENT_TAGS[i].to_string(),
+            ClientType::Camera,
         )
         .expect("MlsClient::new() for returned error.");
 
@@ -321,7 +323,7 @@ pub fn initialize_mls_clients(camera: &dyn Camera, first_time: bool) -> MlsClien
             debug!("Created group.");
         }
 
-        mls_client.save_group_state();
+        mls_client.save_group_state().unwrap();
 
         mls_client
     })
@@ -461,7 +463,7 @@ fn core(
                 info!("Sending the FCM notification with timestamp.");
                 let notification_msg =
                     clients[FCM].encrypt(&bincode::serialize(&video_info.timestamp).unwrap())?;
-                clients[FCM].save_group_state();
+                clients[FCM].save_group_state().unwrap();
                 match http_client.send_fcm_notification(notification_msg) {
                     Ok(_) => {}
                     Err(e) => {
@@ -489,7 +491,7 @@ fn core(
                 let dummy_timestamp: u64 = 0;
                 let notification_msg =
                     clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
-                clients[FCM].save_group_state();
+                clients[FCM].save_group_state().unwrap();
                 match http_client.send_fcm_notification(notification_msg) {
                     Ok(_) => {}
                     Err(e) => {

@@ -4,32 +4,30 @@
 
 use anyhow::anyhow;
 use anyhow::Context;
-use log::{debug, error, info, warn};
+use log::{debug, error};
 use rand::Rng;
 use secluso_client_lib::config::{
-    Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST,
-    OPCODE_HEARTBEAT_RESPONSE,
+    Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE
 };
-use secluso_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
+use secluso_client_lib::mls_client::{Contact, MlsClient, ClientType};
 use secluso_client_lib::mls_clients::MlsClients;
 use secluso_client_lib::mls_clients::{
     CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
 };
 use secluso_client_lib::pairing;
-use secluso_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo, THUMBNAIL_SANITY};
-use secluso_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
+use secluso_client_lib::video::{decrypt_video_file, decrypt_thumbnail_file};
+use openmls::prelude::KeyPackage;
 use serde_json::json;
 use std::array;
 use std::fs;
-use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::net::TcpStream;
-use std::path::Path;
 use std::str;
 use std::str::FromStr;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
+use log::info;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -57,11 +55,12 @@ impl Clients {
                 first_time,
                 file_dir.clone(),
                 MLS_CLIENT_TAGS[i].to_string(),
+                ClientType::App,
             )
             .expect("MlsClient::new() for returned error.");
 
             // Make sure the groups_state files are created in case we initialize again soon.
-            mls_client.save_group_state();
+            mls_client.save_group_state().unwrap();
 
             mls_client
         });
@@ -122,15 +121,15 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
 
 fn perform_pairing_handshake(
     stream: &mut TcpStream,
-    app_key_packages: KeyPackages,
-) -> anyhow::Result<KeyPackages> {
-    let pairing = pairing::App::new(app_key_packages);
+    app_key_package: KeyPackage,
+) -> anyhow::Result<KeyPackage> {
+    let pairing = pairing::App::new(app_key_package);
     let app_msg = pairing.generate_msg_to_camera();
     write_varying_len(stream, &app_msg)?;
     let camera_msg = read_varying_len(stream)?;
-    let camera_key_packages = pairing.process_camera_msg(camera_msg)?;
+    let camera_key_package = pairing.process_camera_msg(camera_msg)?;
 
-    Ok(camera_key_packages)
+    Ok(camera_key_package)
 }
 
 fn send_wifi_and_pairing_info(
@@ -157,7 +156,7 @@ fn send_wifi_and_pairing_info(
     write_varying_len(stream, &wifi_info_msg)?;
     info!("After Wifi Msg Sent");
 
-    mls_client.save_group_state();
+    mls_client.save_group_state().unwrap();
 
     Ok(())
 }
@@ -179,7 +178,7 @@ fn send_credentials_full(
 
     write_varying_len(stream, &encrypted_msg)?;
 
-    mls_client.save_group_state();
+    mls_client.save_group_state().unwrap();
 
     Ok(())
 }
@@ -199,7 +198,7 @@ fn receive_firmware_version(
         }
     };
 
-    mls_client.save_group_state();
+    mls_client.save_group_state().unwrap();
 
     let firmware_version = String::from_utf8(firmware_version_bytes)?;
 
@@ -224,20 +223,20 @@ fn pair_with_camera(
     secret: Vec<u8>,
 ) -> anyhow::Result<()> {
     for index in 0..mls_clients.len() {
-        let mut mls_client = &mut mls_clients[index];
+        let mls_client = &mut mls_clients[index];
 
-        let app_key_packages = mls_client.key_packages();
+        let app_key_package = mls_client.key_package();
 
-        let camera_key_packages = perform_pairing_handshake(stream, app_key_packages)?;
+        let camera_key_package = perform_pairing_handshake(stream, app_key_package)?;
 
         let camera_welcome_msg = read_varying_len(stream)?;
         let group_name = read_varying_len(stream)?;
         let group_name_string = str::from_utf8(&group_name)?.to_string();
 
-        let contact = MlsClient::create_contact(camera_name, camera_key_packages)?;
+        let contact = MlsClient::create_contact(camera_name, camera_key_package)?;
 
         process_welcome_message(
-            &mut mls_client,
+            mls_client,
             contact,
             camera_welcome_msg,
             secret.clone(),
@@ -255,8 +254,8 @@ fn process_welcome_message(
     secret: Vec<u8>,
     group_name: String,
 ) -> io::Result<()> {
-    mls_client.process_welcome(contact, welcome_msg, secret, group_name)?;
-    mls_client.save_group_state();
+    mls_client.process_welcome_with_secret(contact, welcome_msg, secret, &group_name)?;
+    mls_client.save_group_state().unwrap();
 
     Ok(())
 }
@@ -276,7 +275,7 @@ pub fn encrypt_settings_message(
     let settings_msg = config_mls_client
         .encrypt(&message)
         .context("Failed to encrypt SSID")?;
-    config_mls_client.save_group_state();
+    config_mls_client.save_group_state().unwrap();
 
     Ok(settings_msg)
 }
@@ -396,168 +395,9 @@ pub fn initialize(
     Ok(true)
 }
 
-fn read_next_msg_from_file(file: &mut File) -> io::Result<Vec<u8>> {
-    let mut len_buffer = [0u8; 4];
-    let len_bytes_read = file.read(&mut len_buffer)?;
-    if len_bytes_read != 4 {
-        return Err(io::Error::other(
-            "Error: not enough bytes to read the len from file".to_string(),
-        ));
-    }
-
-    let msg_len = u32::from_be_bytes(len_buffer);
-
-    let mut buffer = vec![0; msg_len.try_into().unwrap()];
-    let bytes_read = file.read(&mut buffer)?;
-    if bytes_read != msg_len as usize {
-        return Err(io::Error::other(
-            "Error: not enough bytes to read the message from file".to_string(),
-        ));
-    }
-
-    Ok(buffer)
-}
-
-fn parse_epoch_from_enc_filename(prefix: &str, name: &str) -> Option<u64> {
-    name.strip_prefix(prefix)?.parse::<u64>().ok()
-}
-
-fn write_epoch_marker(
-    file_dir: &str,
-    kind: &str,
-    epoch: u64,
-    payload: Option<&str>,
-) -> io::Result<()> {
-    let marker_path = format!("{}/videos/.epoch_{}_{}.done", file_dir, kind, epoch);
-    if Path::new(&marker_path).exists() {
-        return Ok(());
-    }
-
-    let tmp_path = format!(
-        "{}/videos/.epoch_{}_{}.done.tmp",
-        file_dir, kind, epoch
-    );
-    let mut file = fs::File::create(&tmp_path)?;
-    let content = if let Some(payload) = payload {
-        payload.to_string()
-    } else {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        timestamp.to_string()
-    };
-    file.write_all(content.as_bytes())?;
-    file.flush()?;
-    file.sync_all()?;
-    fs::rename(tmp_path, marker_path)?;
-    Ok(())
-}
-
-fn decrypt_video_attempt(
-    clients: &mut Clients,
-    enc_pathname: &str,
-    _assumed_epoch: u64,
-) -> io::Result<(String, bool)> {
-    let total_start = Instant::now();
-    let file_dir = clients.mls_clients[MOTION].get_file_dir();
-    info!("File dir: {}", file_dir);
-
-    let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
-
-    let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-    // The first message is a commit message
-    let commit_start = Instant::now();
-    clients.mls_clients[MOTION].decrypt(enc_msg, false)?;
-    clients.mls_clients[MOTION].save_group_state();
-    let commit_ms = commit_start.elapsed().as_millis();
-
-    let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-    // The second message is the video info
-    let info_start = Instant::now();
-    let dec_msg = clients.mls_clients[MOTION].decrypt(enc_msg, true)?;
-    let info_ms = info_start.elapsed().as_millis();
-
-    let info: VideoNetInfo = bincode::deserialize(&dec_msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-
-    if info.sanity != *VIDEONETINFO_SANITY || info.num_msg == 0 {
-        return Err(io::Error::other("Error: Corrupt VideoNetInfo message."));
-    }
-
-    // The rest of the messages are video data
-    //Note: we're building the filename based on the timestamp in the message.
-    //The encrypted filename however is not protected and hence the server could have changed it.
-    //Therefore, it is possible that the names won't match.
-    //This is not an issue.
-    //We should use the timestamp in the decrypted filename going forward
-    //and discard the encrypted filename.
-    let dec_filename = format!("video_{}.mp4", info.timestamp);
-    let dec_pathname: String = format!("{}/videos/{}", file_dir, dec_filename);
-
-    if Path::new(&dec_pathname).exists() {
-        debug!(
-            "decrypt_video timings (duplicate): commit={}ms info={}ms total={}ms",
-            commit_ms,
-            info_ms,
-            total_start.elapsed().as_millis()
-        );
-        return Ok((dec_filename, true));
-    }
-
-    let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
-
-    let chunk_start = Instant::now();
-    for expected_chunk_number in 0..info.num_msg {
-        let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-        let dec_msg = clients.mls_clients[MOTION].decrypt(enc_msg, true)?;
-
-        // check the chunk number
-        if dec_msg.len() < 8 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Error: too few bytes!".to_string(),
-            ));
-        }
-
-        let chunk_number = u64::from_be_bytes(dec_msg[..8].try_into().unwrap());
-        if chunk_number != expected_chunk_number {
-            let _ = fs::remove_file(&dec_pathname);
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Error: invalid chunk number!".to_string(),
-            ));
-        }
-
-        let _ = dec_file.write_all(&dec_msg[8..]);
-    }
-    let chunk_ms = chunk_start.elapsed().as_millis();
-
-    // Here, we first make sure the dec_file is flushed.
-    // Then, we save groups state, which persists the update.
-    let flush_start = Instant::now();
-    dec_file.flush().unwrap();
-    dec_file.sync_all().unwrap();
-    clients.mls_clients[MOTION].save_group_state();
-    let flush_ms = flush_start.elapsed().as_millis();
-
-    debug!(
-        "decrypt_video timings: commit={}ms info={}ms chunks={}ms flush={}ms total={}ms (chunks={})",
-        commit_ms,
-        info_ms,
-        chunk_ms,
-        flush_ms,
-        total_start.elapsed().as_millis(),
-        info.num_msg
-    );
-
-    Ok((dec_filename, false))
-}
-
 pub fn decrypt_video(
     clients: &mut Option<Box<Clients>>,
     encrypted_filename: String,
-    assumed_epoch: u64,
 ) -> io::Result<String> {
     if clients.is_none() {
         return Err(io::Error::other(
@@ -567,192 +407,19 @@ pub fn decrypt_video(
 
     let clients = clients.as_mut().unwrap();
     let file_dir = clients.mls_clients[MOTION].get_file_dir();
-    let enc_pathname: String = format!("{}/encrypted/{}", file_dir, &encrypted_filename);
-    let checkpoint_label = format!("motion_{}", &encrypted_filename);
-    let epoch = parse_epoch_from_enc_filename("encVideo", &encrypted_filename);
+    let enc_pathname: String = format!("{}/encrypted/{}", file_dir, encrypted_filename);
+    info!("Encrypted pathname: {}", enc_pathname);
 
-    // Decrypt can advance the MLS ratchet before the output file is safely written.
-    // If the app crashes in that window, retrying the same ciphertext can hit
-    // SecretReuseError. We mitigate this by (1) restoring any existing checkpoint
-    // from a prior crash, (2) saving a fresh checkpoint, and (3) rolling back
-    // once and retrying on any decrypt error. This limits the rollback's scope to this
-    // one file and avoids affecting other MLS channels.
-    {
-        let mls_client = &mut clients.mls_clients[MOTION];
-        if mls_client.restore_checkpoint(&checkpoint_label)? {
-            warn!(
-                "Restored motion MLS checkpoint before decrypt (label={})",
-                checkpoint_label
-            );
-        }
-        mls_client.save_checkpoint(&checkpoint_label)?;
-    }
-
-    match decrypt_video_attempt(clients, &enc_pathname, assumed_epoch) {
-        Ok((filename, is_duplicate)) => {
-            if let Some(epoch) = epoch {
-                if let Err(e) = write_epoch_marker(&file_dir, "motion", epoch, Some(&filename)) {
-                    warn!(
-                        "Failed to write motion epoch marker (epoch={}, err={})",
-                        epoch, e
-                    );
-                }
-            }
-            if let Err(e) = clients.mls_clients[MOTION].clear_checkpoint(&checkpoint_label) {
-                warn!(
-                    "Failed to clear motion MLS checkpoint (label={}, err={})",
-                    checkpoint_label, e
-                );
-            }
-            if is_duplicate {
-                Ok("Duplicate".to_string())
-            } else {
-                Ok(filename)
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Motion decrypt failed (label={}, err={}); rolling back MLS checkpoint and retrying once",
-                checkpoint_label, e
-            );
-            if clients.mls_clients[MOTION].restore_checkpoint(&checkpoint_label)? {
-                warn!(
-                    "Restored motion MLS checkpoint after decrypt failure (label={})",
-                    checkpoint_label
-                );
-            }
-
-            let retry = decrypt_video_attempt(clients, &enc_pathname, assumed_epoch);
-            match retry {
-                Ok((filename, is_duplicate)) => {
-                    if let Some(epoch) = epoch {
-                        if let Err(e) =
-                            write_epoch_marker(&file_dir, "motion", epoch, Some(&filename))
-                        {
-                            warn!(
-                                "Failed to write motion epoch marker (epoch={}, err={})",
-                                epoch, e
-                            );
-                        }
-                    }
-                    warn!(
-                        "Motion decrypt succeeded after rollback (label={})",
-                        checkpoint_label
-                    );
-                    if let Err(err) =
-                        clients.mls_clients[MOTION].clear_checkpoint(&checkpoint_label)
-                    {
-                        warn!(
-                            "Failed to clear motion MLS checkpoint (label={}, err={})",
-                            checkpoint_label, err
-                        );
-                    }
-                    if is_duplicate {
-                        Ok("Duplicate".to_string())
-                    } else {
-                        Ok(filename)
-                    }
-                }
-                Err(err) => Err(err),
-            }
-        }
-    }
-}
-
-fn decrypt_thumbnail_attempt(
-    clients: &mut Clients,
-    enc_pathname: &str,
-    pending_meta_directory: &str,
-    _assumed_epoch: u64,
-) -> io::Result<(String, bool)> {
-    let total_start = Instant::now();
-    let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
-    info!("File dir: {}", file_dir);
-
-    let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
-
-    let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-    // The first message is a commit message
-    let commit_start = Instant::now();
-    clients.mls_clients[THUMBNAIL].decrypt(enc_msg, false)?;
-    clients.mls_clients[THUMBNAIL].save_group_state();
-    let commit_ms = commit_start.elapsed().as_millis();
-
-    let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-    // The second message is the timestamp
-    let meta_start = Instant::now();
-    let dec_msg = clients.mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
-    let meta_ms = meta_start.elapsed().as_millis();
-
-    let thumbnail_meta_info: ThumbnailMetaInfo = bincode::deserialize(&dec_msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-
-    if thumbnail_meta_info.sanity != *THUMBNAIL_SANITY {
-        return Err(io::Error::other("Error: Corrupt ThumbalMetaInfo message."));
-    }
-
-    let dec_filename: String = thumbnail_meta_info.filename;
-    let dec_pathname: String = format!("{}/videos/{}", file_dir, dec_filename);
-
-    if Path::new(&dec_pathname).exists() {
-        // TODO: Should this be an error?
-        debug!(
-            "decrypt_thumbnail timings (duplicate): commit={}ms meta={}ms total={}ms",
-            commit_ms,
-            meta_ms,
-            total_start.elapsed().as_millis()
-        );
-        return Ok((dec_filename, true));
-    }
-
-    // Write a metadata file for the thumbnail, which will be deleted later and stored in the database via the pending processor.
-    let dec_meta_file_path: String = format!(
-        "{}/meta_{}.txt",
-        pending_meta_directory, thumbnail_meta_info.timestamp
-    );
-
-    let meta_file = File::create(&dec_meta_file_path)?;
-    let mut meta_file_writer = BufWriter::new(meta_file);
-
-    // Write JSON data to file.
-    serde_json::to_writer(&mut meta_file_writer, &thumbnail_meta_info.detections)
-        .map_err(std::io::Error::other)?;
-
-    let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
-
-    let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-    let payload_start = Instant::now();
-    let dec_msg = clients.mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
-    let payload_ms = payload_start.elapsed().as_millis();
-
-    let _ = dec_file.write_all(&dec_msg);
-
-    // Here, we first make sure the dec_file is flushed.
-    // Then, we save groups state, which persists the update.
-    let flush_start = Instant::now();
-    dec_file.flush().unwrap();
-    dec_file.sync_all().unwrap();
-    clients.mls_clients[THUMBNAIL].save_group_state();
-    let flush_ms = flush_start.elapsed().as_millis();
-
-    debug!(
-        "decrypt_thumbnail timings: commit={}ms meta={}ms payload={}ms flush={}ms total={}ms (bytes={})",
-        commit_ms,
-        meta_ms,
-        payload_ms,
-        flush_ms,
-        total_start.elapsed().as_millis(),
-        dec_msg.len()
-    );
-
-    Ok((dec_filename, false))
+    decrypt_video_file(
+        &mut clients.mls_clients[MOTION],
+        &enc_pathname,
+    )
 }
 
 pub fn decrypt_thumbnail(
     clients: &mut Option<Box<Clients>>,
     encrypted_filename: String,
     pending_meta_directory: String,
-    assumed_epoch: u64,
 ) -> io::Result<String> {
     if clients.is_none() {
         return Err(io::Error::other(
@@ -762,105 +429,14 @@ pub fn decrypt_thumbnail(
 
     let clients = clients.as_mut().unwrap();
     let file_dir = clients.mls_clients[THUMBNAIL].get_file_dir();
-    let enc_pathname: String = format!("{}/encrypted/{}", file_dir, &encrypted_filename);
+    let enc_pathname: String = format!("{}/encrypted/{}", file_dir, encrypted_filename);
     info!("Encrypted pathname: {}", enc_pathname);
-    let checkpoint_label = format!("thumbnail_{}", &encrypted_filename);
-    let epoch = parse_epoch_from_enc_filename("encThumbnail", &encrypted_filename);
 
-    // Same checkpoint logic as motion: save the previous MLS state so we can roll
-    // back on failure and retry once. This avoids breaking normal MLS epoch rules.
-    {
-        let mls_client = &mut clients.mls_clients[THUMBNAIL];
-        if mls_client.restore_checkpoint(&checkpoint_label)? {
-            warn!(
-                "Restored thumbnail MLS checkpoint before decrypt (label={})",
-                checkpoint_label
-            );
-        }
-        mls_client.save_checkpoint(&checkpoint_label)?;
-    }
-
-    match decrypt_thumbnail_attempt(
-        clients,
+    decrypt_thumbnail_file(
+        &mut clients.mls_clients[THUMBNAIL],
         &enc_pathname,
         &pending_meta_directory,
-        assumed_epoch,
-    ) {
-        Ok((filename, is_duplicate)) => {
-            if let Some(epoch) = epoch {
-                if let Err(e) =
-                    write_epoch_marker(&file_dir, "thumbnail", epoch, Some(&filename))
-                {
-                    warn!(
-                        "Failed to write thumbnail epoch marker (epoch={}, err={})",
-                        epoch, e
-                    );
-                }
-            }
-            if let Err(e) = clients.mls_clients[THUMBNAIL].clear_checkpoint(&checkpoint_label) {
-                warn!(
-                    "Failed to clear thumbnail MLS checkpoint (label={}, err={})",
-                    checkpoint_label, e
-                );
-            }
-            if is_duplicate {
-                Ok("Duplicate".to_string())
-            } else {
-                Ok(filename)
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Thumbnail decrypt failed (label={}, err={}); rolling back MLS checkpoint and retrying once",
-                checkpoint_label, e
-            );
-            if clients.mls_clients[THUMBNAIL].restore_checkpoint(&checkpoint_label)? {
-                warn!(
-                    "Restored thumbnail MLS checkpoint after decrypt failure (label={})",
-                    checkpoint_label
-                );
-            }
-
-            let retry = decrypt_thumbnail_attempt(
-                clients,
-                &enc_pathname,
-                &pending_meta_directory,
-                assumed_epoch,
-            );
-            match retry {
-                Ok((filename, is_duplicate)) => {
-                    if let Some(epoch) = epoch {
-                        if let Err(e) =
-                            write_epoch_marker(&file_dir, "thumbnail", epoch, Some(&filename))
-                        {
-                            warn!(
-                                "Failed to write thumbnail epoch marker (epoch={}, err={})",
-                                epoch, e
-                            );
-                        }
-                    }
-                    warn!(
-                        "Thumbnail decrypt succeeded after rollback (label={})",
-                        checkpoint_label
-                    );
-                    if let Err(err) =
-                        clients.mls_clients[THUMBNAIL].clear_checkpoint(&checkpoint_label)
-                    {
-                        warn!(
-                            "Failed to clear thumbnail MLS checkpoint (label={}, err={})",
-                            checkpoint_label, err
-                        );
-                    }
-                    if is_duplicate {
-                        Ok("Duplicate".to_string())
-                    } else {
-                        Ok(filename)
-                    }
-                }
-                Err(err) => Err(err),
-            }
-        }
-    }
+    )
 }
 
 pub fn decrypt_message(
@@ -881,7 +457,7 @@ pub fn decrypt_message(
 
     let dec_msg_bytes =
         clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].decrypt(message, true)?;
-    clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].save_group_state();
+    clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].save_group_state().unwrap();
 
     // New JSON structure. Ensure valid JSON string
     if let Ok(message) = str::from_utf8(&dec_msg_bytes) {
@@ -947,7 +523,7 @@ pub fn livestream_decrypt(
     }
 
     let dec_data = clients.as_mut().unwrap().mls_clients[LIVESTREAM].decrypt(enc_data, true)?;
-    clients.as_mut().unwrap().mls_clients[LIVESTREAM].save_group_state();
+    clients.as_mut().unwrap().mls_clients[LIVESTREAM].save_group_state().unwrap();
 
     // check the chunk number
     if dec_data.len() < 8 {
@@ -988,7 +564,7 @@ pub fn livestream_update(
         let _ = clients.as_mut().unwrap().mls_clients[LIVESTREAM].decrypt(commit_msg, false)?;
     }
 
-    clients.as_mut().unwrap().mls_clients[LIVESTREAM].save_group_state();
+    clients.as_mut().unwrap().mls_clients[LIVESTREAM].save_group_state().unwrap();
 
     Ok(())
 }
@@ -1032,7 +608,7 @@ pub fn generate_heartbeat_request_config_command(
 
     let config_msg_enc = clients.as_mut().unwrap().mls_clients[CONFIG].encrypt(&config_msg)?;
 
-    clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
+    clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
 
     Ok(config_msg_enc)
 }
@@ -1050,7 +626,7 @@ pub fn process_heartbeat_config_response(
 
     match clients.as_mut().unwrap().mls_clients[CONFIG].decrypt(config_response, true) {
         Ok(command) => {
-            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
+            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
             info!("Decrypted command: {}", command.len());
             match command[0] {
                 OPCODE_HEARTBEAT_RESPONSE => {
@@ -1074,16 +650,16 @@ pub fn process_heartbeat_config_response(
                     }
                 }
                 _ => {
-                    error!("Error: Unknown config command response opcode!");
+                    error!("Error: Unexpected config command response opcode! - {}", command[0]);
                     Err(io::Error::other(
-                        "Error: Unknown config response opcode!".to_string(),
+                        "Error: Unexpected config response opcode!".to_string(),
                     ))
                 }
             }
         }
         Err(e) => {
             error!("Failed to decrypt command message: {e}");
-            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
+            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
             Err(io::Error::other(format!(
                 "Failed to decrypt command message: {e}"
             )))

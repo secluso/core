@@ -4134,6 +4134,7 @@ dependencies = [
  "linfa-clustering",
  "log",
  "ndarray 0.15.6",
+ "openmls",
  "openmls_rust_crypto",
  "openmls_traits",
  "qrcode",

@@ -10,24 +10,15 @@ use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, FCM, MAX_OFFLINE_WINDOW, MOTION, THUMBNAIL};
 use secluso_client_lib::thumbnail_meta_info::{GeneralDetectionType, ThumbnailMetaInfo};
-use secluso_client_lib::video_net_info::VideoNetInfo;
+use secluso_client_lib::video::{encrypt_video_file, encrypt_thumbnail_file};
 use std::fs;
-use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, Read, Write};
 
 // Used to contain data returned from motion detection from IP + Raspberry cameras
 pub struct MotionResult {
     pub motion: bool,
     pub detections: Vec<GeneralDetectionType>,
     pub thumbnail: Option<RgbImage>,
-}
-
-fn append_to_file(mut file: &File, msg: Vec<u8>) {
-    let msg_len: u32 = msg.len().try_into().unwrap();
-    let msg_len_data = msg_len.to_be_bytes();
-    let _ = file.write_all(&msg_len_data);
-    let _ = file.write_all(&msg);
 }
 
 pub fn upload_pending_enc_thumbnails(
@@ -93,6 +84,9 @@ pub fn upload_pending_enc_videos(
     Ok(())
 }
 
+// TODO: for motion videos, we have VideoInfo used by the delivery monitor and
+// VideoNetInfo encrypted with the video. For Thumbnail, we only have one, ThumbnailMetaInfo.
+// Make them consistent.
 pub fn prepare_motion_thumbnail(
     mls_client: &mut MlsClient,
     mut thumbnail_info: ThumbnailMetaInfo,
@@ -104,43 +98,19 @@ pub fn prepare_motion_thumbnail(
         //return Ok(());
     }
 
-    debug!("Starting to send timestamp.");
-
-    // Update MLS epoch
-    let (commit_msg, thumbnail_epoch) = mls_client.update()?;
+    // encrypt_thumbnail_file() performs an update, which increases the epoch by 1.
+    thumbnail_info.epoch = mls_client.get_epoch()? + 1;
     let thumbnail_file_path = delivery_monitor.get_thumbnail_file_path(&thumbnail_info);
-
-    thumbnail_info.epoch = thumbnail_epoch;
-
     let enc_thumbnail_file_path = delivery_monitor.get_enc_thumbnail_file_path(&thumbnail_info);
-    let mut enc_file =
-        File::create(&enc_thumbnail_file_path).expect("Could not create encrypted video file");
 
-    append_to_file(&enc_file, commit_msg);
+    let epoch = encrypt_thumbnail_file(
+        mls_client,
+        thumbnail_file_path.to_str().expect("Path is not valid UTF-8"),
+        enc_thumbnail_file_path.to_str().expect("Path is not valid UTF-8"),
+        &mut thumbnail_info,
+    )?;
 
-    // We need to store the timestamp to match against the video's, as otherwise we only have epoch-level info (which can vary between videos and timestamps easily)
-    let msg = mls_client
-        .encrypt(&bincode::serialize(&thumbnail_info).unwrap())
-        .inspect_err(|_| {
-            error!("encrypt() returned error:");
-        })?;
-    append_to_file(&enc_file, msg);
-
-    let mut file = File::open(thumbnail_file_path).expect("Could not open video file to send");
-    let mut thumbnail_data: Vec<u8> = Vec::new();
-    file.read_to_end(&mut thumbnail_data)?;
-
-    let msg = mls_client.encrypt(&thumbnail_data).inspect_err(|_| {
-        error!("encrypt() returned error:");
-    })?;
-    append_to_file(&enc_file, msg);
-
-    // Here, we first make sure the enc_file is flushed.
-    // Then, we save groups state, which persists the update.
-    // Then, we enqueue to be uploaded to the server.
-    enc_file.flush().unwrap();
-    enc_file.sync_all().unwrap();
-    mls_client.save_group_state();
+    assert!(epoch == thumbnail_info.epoch);
 
     // FIXME: fatal crash point here. We have committed the update, but we will never enqueue it for sending.
     // Severity: medium.
@@ -167,64 +137,20 @@ pub fn prepare_motion_video(
         //return Ok(());
     }
 
+    // encrypt_video_file() performs an update, which increases the epoch by 1.
+    video_info.epoch = mls_client.get_epoch()? + 1;
     let video_file_path = delivery_monitor.get_video_file_path(&video_info);
-
-    debug!("Starting to send video.");
-    let (commit_msg, epoch) = mls_client.update()?;
-
-    video_info.epoch = epoch;
     let enc_video_file_path = delivery_monitor.get_enc_video_file_path(&video_info);
-    let mut enc_file =
-        File::create(&enc_video_file_path).expect("Could not create encrypted video file");
 
-    append_to_file(&enc_file, commit_msg);
+    let epoch = encrypt_video_file(
+        mls_client,
+        video_file_path.to_str().expect("Path is not valid UTF-8"),
+        enc_video_file_path.to_str().expect("Path is not valid UTF-8"),
+        video_info.timestamp,
+    )?;
 
-    let file = File::open(video_file_path).expect("Could not open video file to send");
-    let file_len = file.metadata().unwrap().len();
-
-    // FIXME: why this chunk size? Test larger and smaller chunks.
-    const READ_SIZE: usize = 64 * 1024;
-    let mut reader = BufReader::with_capacity(READ_SIZE, file);
-
-    let net_info = VideoNetInfo::new(video_info.timestamp, file_len, READ_SIZE as u64);
-
-    let msg = mls_client
-        .encrypt(&bincode::serialize(&net_info).unwrap())
-        .inspect_err(|_| {
-            error!("encrypt() returned error:");
-        })?;
-    append_to_file(&enc_file, msg);
-
-    for chunk_number in 0..net_info.num_msg {
-        // We include the chunk number in the chunk itself (and check it in the app)
-        // to prevent a malicious server from reordering the chunks.
-        let mut buffer: Vec<u8> = chunk_number.to_be_bytes().to_vec();
-        buffer.extend(reader.fill_buf().unwrap());
-        let length = buffer.len();
-        // Sanity checks
-        if chunk_number < (net_info.num_msg - 1) {
-            assert_eq!(length, READ_SIZE + 8);
-        } else {
-            assert_eq!(
-                length,
-                (<u64 as TryInto<usize>>::try_into(file_len).unwrap() % READ_SIZE) + 8
-            );
-        }
-
-        let msg = mls_client.encrypt(&buffer).inspect_err(|_| {
-            error!("send_video() returned error:");
-            mls_client.save_group_state();
-        })?;
-        append_to_file(&enc_file, msg);
-        reader.consume(length);
-    }
-
-    // Here, we first make sure the enc_file is flushed.
-    // Then, we save groups state, which persists the update.
-    // Then, we enqueue to be uploaded to the server.
-    enc_file.flush().unwrap();
-    enc_file.sync_all().unwrap();
-    mls_client.save_group_state();
+    assert!(epoch == video_info.epoch);
+    
 
     // FIXME: fatal crash point here. We have committed the update, but we will never enqueue it for sending.
     // Severity: medium.
@@ -297,7 +223,7 @@ pub fn send_pending_motion_videos(
         let dummy_timestamp: u64 = 0;
         let notification_msg =
             clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
-        clients[FCM].save_group_state();
+        clients[FCM].save_group_state().unwrap();
         http_client.send_fcm_notification(notification_msg)?;
     }
 
@@ -369,7 +295,7 @@ pub fn send_pending_thumbnails(
         let dummy_timestamp: u64 = 0;
         let notification_msg =
             clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
-        clients[FCM].save_group_state();
+        clients[FCM].save_group_state().unwrap();
         http_client.send_fcm_notification(notification_msg)?;
     }
 

@@ -1,186 +1,112 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-/// Before running the tests:
-/// 1. Create the test_data folder and copy the user_credentials file in it (credentials not needed for the pairing_test).
-/// 2. Run the deliver service locally and on port 12346.
-/// 3. Make sure to use --test-threads=1. Tests might reuse file addresses and hence will corrupt each other if run
+/// Note: Make sure to use --test-threads=1. That is: cargo test -- --test-threads=1
+/// Tests might reuse file addresses and hence will corrupt each other if run
 /// in parallel.
 
 #[cfg(test)]
 mod tests {
-    use crate::pairing::{App, Camera, NUM_SECRET_BYTES};
-    use crate::user::{KeyPackages, User};
-    use std::fs;
+    use crate::pairing::NUM_SECRET_BYTES;
+    use crate::mls_client::{MlsClient, Contact, ClientType};
+    use crate::video::{encrypt_video_file, decrypt_video_file,
+        encrypt_thumbnail_file, decrypt_thumbnail_file};
+    use crate::thumbnail_meta_info::ThumbnailMetaInfo;
+    use std::fs::{self, File};
     use std::io;
-    use std::io::{BufRead, BufReader};
-    use std::net::TcpStream;
+    use std::io::{Read, Write};
 
     const GROUP_NAME: &str = "group";
-    const SERVER_ADDR: &str = "127.0.0.1:12346";
 
-    #[test]
-    fn pairing_test() {
-        let secret: [u8; NUM_SECRET_BYTES] = [
-            1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5,
-            6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2,
-            3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8,
-        ];
-
-        let camera_server_stream = TcpStream::connect("127.0.0.1:12346").unwrap();
-        let app_server_stream = TcpStream::connect("127.0.0.1:12346").unwrap();
-        let credentials = get_user_credentials();
-
-        let camera_client = User::new(
-            "camera".to_string(),
-            camera_server_stream,
-            true,
-            true,
-            "test_data".to_string(),
-            "camera".to_string(),
-            credentials.clone(),
-            false,
-        )
-        .map_err(|e| {
-            println!("User::new() returned error:");
-            e
-        })
-        .unwrap();
-
-        let app_client = User::new(
-            "app".to_string(),
-            app_server_stream,
-            true,
-            true,
-            "test_data".to_string(),
-            "app".to_string(),
-            credentials.clone(),
-            false,
-        )
-        .map_err(|e| {
-            println!("User::new() returned error:");
-            e
-        })
-        .unwrap();
-
-        // app key packages
-        let app_key_packages: KeyPackages = app_client.key_packages();
-
-        // camera key packages
-        let camera_key_packages: KeyPackages = camera_client.key_packages();
-
-        let app = App::new(secret, app_key_packages.clone());
-        let camera = Camera::new(secret, camera_key_packages.clone());
-
-        let msg = app.generate_msg_to_camera();
-
-        // send msg to camera here
-        let (received_app_key_packages, msg2) = camera.process_app_msg_and_generate_msg_to_app(msg);
-
-        // send msg to app here
-        let received_camera_key_packages = app.process_camera_msg(msg2);
-
-        assert!(app_key_packages == received_app_key_packages);
-        assert!(camera_key_packages == received_camera_key_packages);
-    }
-
-    fn get_user_credentials() -> Vec<u8> {
-        let pathname = "./test_data/user_credentials";
-        let file = fs::File::open(pathname).expect("Could not open user_credentials file");
-        let mut reader =
-            BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
-        let data = reader.fill_buf().unwrap();
-
-        data.to_vec()
-    }
-
-    fn pair() -> (User, User) {
-        let credentials = get_user_credentials();
-
-        let _ = fs::remove_dir_all("test_data/camera");
+    /// Receives the secrets known by the camera and the app and perform the
+    // initial steps of pairing all the way until generating the welcome message.
+    /// We break down the pairing process into two parts to be able
+    /// to test the authentication separately.
+    fn pair_initial(
+        camera_secret: Vec<u8>,
+    ) -> io::Result<(MlsClient, MlsClient, Contact, Vec<u8>)> {
+        fs::remove_dir_all("test_data").unwrap();
+        fs::create_dir("test_data").unwrap();
         fs::create_dir("test_data/camera").unwrap();
-        let _ = fs::remove_dir_all("test_data/app");
         fs::create_dir("test_data/app").unwrap();
 
-        let stream_camera = match TcpStream::connect(SERVER_ADDR.to_string()) {
-            Ok(stream) => stream,
-            Err(e) => {
-                panic!("Error: Could not connect to the server: {e}");
-            }
-        };
-
-        let stream_app = match TcpStream::connect(SERVER_ADDR.to_string()) {
-            Ok(stream) => stream,
-            Err(e) => {
-                panic!("Error: Could not connect to the server: {e}");
-            }
-        };
-
         // Create clients
-        let mut camera = User::new(
+        let mut camera = MlsClient::new(
             "camera".to_string(),
-            stream_camera,
-            true,
             true,
             "test_data/camera".to_string(),
             "camera".to_string(),
-            credentials.clone(),
-            false,
-        )
-        .unwrap();
+            ClientType::Camera,
+        )?;
 
-        let mut app = User::new(
+        let mut app = MlsClient::new(
             "app".to_string(),
-            stream_app,
-            true,
             true,
             "test_data/app".to_string(),
             "app".to_string(),
-            credentials,
-            false,
-        )
-        .unwrap();
+            ClientType::App,
+        )?;
 
         // Exchange key packages, create group, invite, and join
-        let camera_contact = camera
-            .add_contact("app".to_string(), app.key_packages())
-            .unwrap();
-        let app_contact = app
-            .add_contact("camera".to_string(), camera.key_packages())
-            .unwrap();
+        let camera_contact =
+            MlsClient::create_contact("app", app.key_package())?;
+        let app_contact =
+            MlsClient::create_contact("camera", camera.key_package())?;
 
-        camera.create_group(GROUP_NAME.to_string());
-        camera.save_groups_state();
+        camera.create_group(GROUP_NAME)?;
+        camera.save_group_state().unwrap();
 
-        camera
-            .invite(&camera_contact, GROUP_NAME.to_string())
-            .unwrap();
-        camera.save_groups_state();
+        let (welcome_msg_vec, _, _) = camera
+            .invite_with_secret(&camera_contact, camera_secret)?;
+        camera.save_group_state().unwrap();
 
-        app.receive_welcome(app_contact).unwrap();
-        app.save_groups_state();
+        Ok((camera, app, app_contact, welcome_msg_vec))
+    }
+
+    /// This function is a complete pairing process.
+    /// It requires the caller to pass the secrets known
+    /// to the app and camera.
+    fn pair_pass_secrets(
+        camera_secret: Vec<u8>,
+        app_secret: Vec<u8>,
+    ) -> io::Result<(MlsClient, MlsClient)> {
+        let (camera, mut app, app_contact, welcome_msg_vec) = pair_initial(camera_secret).unwrap();
+
+        app.process_welcome_with_secret(app_contact, welcome_msg_vec, app_secret, GROUP_NAME).unwrap();
+        app.save_group_state().unwrap();
+
+        Ok((camera, app))
+    }
+    
+    /// This function is a complete, successful pairing process with built-in secrets.
+    /// It is used in other tests.
+    fn pair() -> (MlsClient, MlsClient) {
+        let secret = vec![0u8; NUM_SECRET_BYTES];
+
+        let (camera, app) = pair_pass_secrets(secret.clone(), secret).unwrap();
 
         (camera, app)
     }
 
-    fn reinitialize_app() -> User {
-        let credentials = get_user_credentials();
+    fn reinitialize_camera() -> MlsClient {
+        let camera = MlsClient::new(
+            "camera".to_string(),
+            false,
+            "test_data/camera".to_string(),
+            "camera".to_string(),
+            ClientType::Camera,
+        )
+        .unwrap();
 
-        let stream_app = match TcpStream::connect(SERVER_ADDR.to_string()) {
-            Ok(stream) => stream,
-            Err(e) => {
-                panic!("Error: Could not connect to the server: {e}");
-            }
-        };
+        camera
+    }
 
-        let app = User::new(
+    fn reinitialize_app() -> MlsClient {
+        let app = MlsClient::new(
             "app".to_string(),
-            stream_app,
-            false, // not the first time
-            false, // no need to reregister with the server
+            false,
             "test_data/app".to_string(),
             "app".to_string(),
-            credentials,
-            false,
+            ClientType::App,
         )
         .unwrap();
 
@@ -188,31 +114,46 @@ mod tests {
     }
 
     #[test]
+    /// Camera and app both have the same secret and hence can
+    /// successfuly authenticate and pair.
+    fn pair_successful() {
+        let secret = vec![0u8; NUM_SECRET_BYTES];
+
+        let _ = pair_pass_secrets(secret.clone(), secret).unwrap();
+    }
+
+    #[test]
+    /// Camera and app do not have the same secrets and hence cannot
+    /// successfuly authenticate and pair.
+    fn pair_unsuccessful() {
+        let camera_secret = vec![0u8; NUM_SECRET_BYTES];
+        let app_secret = vec![1u8; NUM_SECRET_BYTES];
+
+        let (_, mut app, app_contact, welcome_msg_vec) = pair_initial(camera_secret).unwrap();
+
+        let welcome_result = app.process_welcome_with_secret(app_contact, welcome_msg_vec, app_secret, GROUP_NAME);
+
+        assert!(welcome_result.is_err());
+    }
+
+    #[test]
     /// Camera invites app and immediately sends a message to it.
     fn camera_to_app_message_test() {
         let (mut camera, mut app) = pair();
 
-        // Camera sends a message
-        let message = "Hello, app!".to_string();
-        camera
-            .send(message.clone().as_bytes(), GROUP_NAME.to_string())
+        // Camera encrypts the message
+        let msg = "Hello, app!";
+        let msg_enc = camera
+            .encrypt(msg.as_bytes())
             .unwrap();
+        camera.save_group_state().unwrap();
 
-        //App receives the message
-        let mut message_received = false;
-        let callback = |msg_bytes: Vec<u8>, contact_name: String| -> io::Result<()> {
-            message_received = true;
-            assert!(contact_name == *"camera");
-            assert!(String::from_utf8(msg_bytes).unwrap() == message);
+        //App decrypts the message
+        let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+        app.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
 
-            Ok(())
-        };
-
-        app.receive(callback).unwrap();
-        assert!(message_received);
-
-        camera.deregister().unwrap();
-        app.deregister().unwrap();
+        assert!(msg == msg_dec);
     }
 
     #[test]
@@ -220,86 +161,349 @@ mod tests {
     fn app_to_camera_message_test() {
         let (mut camera, mut app) = pair();
 
-        //App sends a message
-        let message = "Hello, camera!".to_string();
-        app.send(message.clone().as_bytes(), GROUP_NAME.to_string())
+        // Camera encrypts the message
+        let msg = "Hello, app!";
+        let msg_enc = app
+            .encrypt(msg.as_bytes())
             .unwrap();
+        app.save_group_state().unwrap();
 
-        //App receives the message
-        let mut message_received = false;
-        let callback = |msg_bytes: Vec<u8>, contact_name: String| -> io::Result<()> {
-            message_received = true;
-            assert!(contact_name == *"app");
-            assert!(String::from_utf8(msg_bytes).unwrap() == message);
+        //App decrypts the message
+        let msg_dec_vec = camera.decrypt(msg_enc, true).unwrap();
+        camera.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
 
-            Ok(())
-        };
+        assert!(msg == msg_dec);
+    }
 
-        camera.receive(callback).unwrap();
-        assert!(message_received);
+    #[test]
+    /// Camera invites app and then sends a couple of messages to the app.
+    /// The camera and the app reinitialize multiple times in this process.
+    fn camera_to_app_message_reinit_test() {
+        let _ = pair();
 
-        camera.deregister().unwrap();
-        app.deregister().unwrap();
+        for i in 0..10 {
+            let mut camera = reinitialize_camera();
+            let mut app = reinitialize_app();
+
+            // Camera encrypts the message
+            let msg = format!("Hello, app! -- {i}");
+            let msg_enc = camera
+                .encrypt(msg.as_bytes())
+                .unwrap();
+            camera.save_group_state().unwrap();
+
+            //App decrypts the message
+            let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+            app.save_group_state().unwrap();
+            let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+            assert!(msg == msg_dec);
+        }
+    }
+
+    #[test]
+    /// Camera invites app and the app sends a couple of messages to camera.
+    /// The camera and the app reinitialize multiple times in this process.
+    fn app_to_camera_message_reinit_test() {
+        let _ = pair();
+
+        for i in 0..10 {
+            let mut camera = reinitialize_camera();
+            let mut app = reinitialize_app();
+
+            // Camera encrypts the message
+            let msg = format!("Hello, camera! -- {i}");
+            let msg_enc = app
+                .encrypt(msg.as_bytes())
+                .unwrap();
+            app.save_group_state().unwrap();
+
+            //App decrypts the message
+            let msg_dec_vec = camera.decrypt(msg_enc, true).unwrap();
+            camera.save_group_state().unwrap();
+            let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+            assert!(msg == msg_dec);
+        }
     }
 
     #[test]
     /// Camera invites app and immediately sends a message to it.
     /// It then does a self update and sends another message.
+    /// This repeats a few times.
+    /// On every other iteration, app also generates an update
+    /// proposal and asks the camera to commit it.
     fn update_test() {
         let (mut camera, mut app) = pair();
 
-        //Camera sends a message
-        let message = "Hello, app!".to_string();
-        camera
-            .send(message.clone().as_bytes(), GROUP_NAME.to_string())
+        for i in 0..10 {
+            let msg = format!("Hello, app! -- {i}");
+            let msg_enc = camera
+                .encrypt(msg.as_bytes())
+                .unwrap();
+            camera.save_group_state().unwrap();
+
+            //App decrypts the message
+            let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+            app.save_group_state().unwrap();
+            let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+            assert!(msg == msg_dec);
+
+            let camera_leaf_nodes_before = camera.get_own_leaf_node();
+            let app_leaf_nodes_before = app.get_own_leaf_node();
+
+            //Camera performs an MLS update and send the commit to the app.
+            let (commit_msg, _) = camera.update().unwrap();
+            camera.save_group_state().unwrap();
+
+            // The app merges the commits.
+            app.decrypt(commit_msg, false).unwrap();
+            app.save_group_state().unwrap();
+
+            // Compare the ratchet trees maintained by camera and app.
+            // They should match.
+            let camera_ratchet_tree = camera.get_ratchet_tree();
+            let app_ratchet_tree = app.get_ratchet_tree();
+            assert_eq!(camera_ratchet_tree, app_ratchet_tree);
+
+            let camera_leaf_nodes_after = camera.get_own_leaf_node();
+            let app_leaf_nodes_after = app.get_own_leaf_node();
+
+            if i % 2 == 0 {
+                // In these iterations, only the camera should be updated.
+                assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+                assert_eq!(app_leaf_nodes_before, app_leaf_nodes_after);
+
+                let update_proposal = app.update_proposal().unwrap();
+                app.save_group_state().unwrap();
+                camera.decrypt(update_proposal, false).unwrap();
+                camera.save_group_state().unwrap();
+            } else {
+                // In these iterations, both the camera and the app should be updated.
+                assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+                assert_ne!(app_leaf_nodes_before, app_leaf_nodes_after);
+            }
+        }
+    }
+
+    #[test]
+    /// The same as the update_test. The difference is that
+    /// the app and camera reinitialize multiple times in the process.
+    fn update_with_reinit_test() {
+        let _ = pair();
+        //let (mut camera, mut app) = pair();
+
+        for i in 0..10 {
+            let mut camera = reinitialize_camera();
+            let mut app = reinitialize_app();
+
+            let msg = format!("Hello, app! -- {i}");
+            let msg_enc = camera
+                .encrypt(msg.as_bytes())
+                .unwrap();
+            camera.save_group_state().unwrap();
+
+            //App decrypts the message
+            let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+            app.save_group_state().unwrap();
+            let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+            assert!(msg == msg_dec);
+
+            let camera_leaf_nodes_before = camera.get_own_leaf_node();
+            let app_leaf_nodes_before = app.get_own_leaf_node();
+
+            //Camera performs an MLS update and send the commit to the app.
+            let (commit_msg, _) = camera.update().unwrap();
+            camera.save_group_state().unwrap();
+
+            // The app merges the commits.
+            app.decrypt(commit_msg, false).unwrap();
+            app.save_group_state().unwrap();
+
+            // Compare the ratchet trees maintained by camera and app.
+            // They should match.
+            let camera_ratchet_tree = camera.get_ratchet_tree();
+            let app_ratchet_tree = app.get_ratchet_tree();
+            assert_eq!(camera_ratchet_tree, app_ratchet_tree);
+
+            let camera_leaf_nodes_after = camera.get_own_leaf_node();
+            let app_leaf_nodes_after = app.get_own_leaf_node();
+
+            if i % 2 == 0 {
+                // In these iterations, only the camera should be updated.
+                assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+                assert_eq!(app_leaf_nodes_before, app_leaf_nodes_after);
+
+                let update_proposal = app.update_proposal().unwrap();
+                app.save_group_state().unwrap();
+                camera.decrypt(update_proposal, false).unwrap();
+                camera.save_group_state().unwrap();
+            } else {
+                // In these iterations, both the camera and the app should be updated.
+                assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+                assert_ne!(app_leaf_nodes_before, app_leaf_nodes_after);
+            }
+        }
+    }
+
+    #[test]
+    /// Camera invites app and immediately sends a message to it.
+    /// It then does a self update and sends the commit message.
+    /// App also generates an update proposal, which is lost,
+    /// followed by another update proposal, which is sent to
+    /// the camera.
+    fn update_with_missed_update_proposal_test() {
+        let (mut camera, mut app) = pair();
+
+        let msg = format!("Hello, app!");
+        let msg_enc = camera
+            .encrypt(msg.as_bytes())
             .unwrap();
+        camera.save_group_state().unwrap();
 
-        //App receives the message
-        let mut message_received = false;
-        let callback = |msg_bytes: Vec<u8>, contact_name: String| -> io::Result<()> {
-            message_received = true;
-            assert!(contact_name == *"camera");
-            assert!(String::from_utf8(msg_bytes).unwrap() == message);
+        //App decrypts the message
+        let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+        app.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
 
-            Ok(())
-        };
+        assert!(msg == msg_dec);
 
-        app.receive(callback).unwrap();
-        assert!(message_received);
+        let camera_leaf_nodes_before = camera.get_own_leaf_node();
+        let app_leaf_nodes_before = app.get_own_leaf_node();
 
-        //Camera performs an MLS update.
-        camera.perform_update(GROUP_NAME.to_string()).unwrap();
-        camera.send_update(GROUP_NAME.to_string()).unwrap();
+        //Camera performs an MLS update and send the commit to the app.
+        let (commit_msg, _) = camera.update().unwrap();
+        camera.save_group_state().unwrap();
 
-        //Camera sends the second messages
-        let message2 = "Hello, again!".to_string();
-        camera
-            .send(message2.clone().as_bytes(), GROUP_NAME.to_string())
+        // The app merges the commits.
+        app.decrypt(commit_msg, false).unwrap();
+        app.save_group_state().unwrap();
+
+        // Compare the ratchet trees maintained by camera and app.
+        // They should match.
+        let camera_ratchet_tree = camera.get_ratchet_tree();
+        let app_ratchet_tree = app.get_ratchet_tree();
+        assert_eq!(camera_ratchet_tree, app_ratchet_tree);
+
+        let camera_leaf_nodes_after = camera.get_own_leaf_node();
+        let app_leaf_nodes_after = app.get_own_leaf_node();
+
+        // Only the camera should be updated.
+        assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+        assert_eq!(app_leaf_nodes_before, app_leaf_nodes_after);
+
+        let camera_leaf_nodes_before = camera.get_own_leaf_node();
+        let app_leaf_nodes_before = app.get_own_leaf_node();
+
+        // App generates an update proposal, which is "lost."
+        let _update_proposal_lost = app.update_proposal().unwrap();
+        app.save_group_state().unwrap();
+
+        // App then generates another update proposal, which is successfully
+        // sent to the camera.
+        let update_proposal = app.update_proposal().unwrap();
+        app.save_group_state().unwrap();
+
+        camera.decrypt(update_proposal, false).unwrap();
+        camera.save_group_state().unwrap();
+
+        //Camera performs an MLS update and send the commit to the app.
+        let (commit_msg, _) = camera.update().unwrap();
+        camera.save_group_state().unwrap();
+
+        // The app merges the commits.
+        app.decrypt(commit_msg, false).unwrap();
+        app.save_group_state().unwrap();
+
+        let camera_leaf_nodes_after = camera.get_own_leaf_node();
+        let app_leaf_nodes_after = app.get_own_leaf_node();
+
+        // Both the camera and the app should be updated.
+        // They should also match.
+        assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+        assert_ne!(app_leaf_nodes_before, app_leaf_nodes_after);
+        assert_eq!(camera_ratchet_tree, app_ratchet_tree);
+    }
+
+    #[test]
+    /// Camera invites app and immediately sends a message to it.
+    /// It then does a self update and sends the commit message.
+    /// App also generates two update proposals, but only the first
+    //  one (old one) is used by the camera.
+    fn update_with_old_update_proposal_test() {
+        let (mut camera, mut app) = pair();
+
+        let msg = format!("Hello, app!");
+        let msg_enc = camera
+            .encrypt(msg.as_bytes())
             .unwrap();
+        camera.save_group_state().unwrap();
 
-        //App receives the update.
-        let callback_app = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> {
-            println!("contact_name = {:?}", _contact_name);
-            Ok(())
-        };
+        //App decrypts the message
+        let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+        app.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
 
-        app.receive(callback_app).unwrap();
+        assert!(msg == msg_dec);
 
-        //App receives the message
-        let mut message2_received = false;
-        let callback = |msg_bytes: Vec<u8>, contact_name: String| -> io::Result<()> {
-            message2_received = true;
-            assert!(contact_name == *"camera");
-            assert!(String::from_utf8(msg_bytes).unwrap() == message2);
+        let camera_leaf_nodes_before = camera.get_own_leaf_node();
+        let app_leaf_nodes_before = app.get_own_leaf_node();
 
-            Ok(())
-        };
+        //Camera performs an MLS update and send the commit to the app.
+        let (commit_msg, _) = camera.update().unwrap();
+        camera.save_group_state().unwrap();
 
-        app.receive(callback).unwrap();
-        assert!(message2_received);
+        // The app merges the commits.
+        app.decrypt(commit_msg, false).unwrap();
+        app.save_group_state().unwrap();
 
-        camera.deregister().unwrap();
-        app.deregister().unwrap();
+        // Compare the ratchet trees maintained by camera and app.
+        // They should match.
+        let camera_ratchet_tree = camera.get_ratchet_tree();
+        let app_ratchet_tree = app.get_ratchet_tree();
+        assert_eq!(camera_ratchet_tree, app_ratchet_tree);
+
+        let camera_leaf_nodes_after = camera.get_own_leaf_node();
+        let app_leaf_nodes_after = app.get_own_leaf_node();
+
+        // Only the camera should be updated.
+        assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+        assert_eq!(app_leaf_nodes_before, app_leaf_nodes_after);
+
+        let camera_leaf_nodes_before = camera.get_own_leaf_node();
+        let app_leaf_nodes_before = app.get_own_leaf_node();
+
+        // App generates the first (old) update proposal.
+        let update_proposal_old = app.update_proposal().unwrap();
+        app.save_group_state().unwrap();
+
+        // App then generates another update proposal, which is not
+        // used by the camera
+        let _update_proposal = app.update_proposal().unwrap();
+        app.save_group_state().unwrap();
+
+        camera.decrypt(update_proposal_old, false).unwrap();
+        camera.save_group_state().unwrap();
+
+        //Camera performs an MLS update and send the commit to the app.
+        let (commit_msg, _) = camera.update().unwrap();
+        camera.save_group_state().unwrap();
+
+        // The app merges the commits.
+        app.decrypt(commit_msg, false).unwrap();
+        app.save_group_state().unwrap();
+
+        let camera_leaf_nodes_after = camera.get_own_leaf_node();
+        let app_leaf_nodes_after = app.get_own_leaf_node();
+
+        // Both the camera and the app should be updated.
+        // They should also match.
+        assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+        assert_ne!(app_leaf_nodes_before, app_leaf_nodes_after);
+        assert_eq!(camera_ratchet_tree, app_ratchet_tree);
     }
 
     #[test]
@@ -308,153 +512,629 @@ mod tests {
     /// (which cannot be successfully decrypted by the app).
     /// The camera then sends the update, followed by another message
     /// (which should be successfully decrypted by the app).
-    /// This is important to ensure that a loss of an update message does not break the
-    /// channel permanently.
     fn update_no_send_first_test() {
         let (mut camera, mut app) = pair();
 
-        //Camera sends a message
-        let message = "Hello, app!".to_string();
-        camera
-            .send(message.clone().as_bytes(), GROUP_NAME.to_string())
+        //Camera generates a message for the pp
+        let msg = format!("Hello, app! -- 1");
+        let msg_enc = camera
+            .encrypt(msg.as_bytes())
             .unwrap();
+        camera.save_group_state().unwrap();
 
-        //App receives the message
-        let mut message_received = false;
-        let callback = |msg_bytes: Vec<u8>, contact_name: String| -> io::Result<()> {
-            message_received = true;
-            assert!(contact_name == *"camera");
-            assert!(String::from_utf8(msg_bytes).unwrap() == message);
+        //App decrypts the message
+        let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+        app.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
 
-            Ok(())
-        };
+        assert!(msg == msg_dec);
 
-        app.receive(callback).unwrap();
-        assert!(message_received);
+        let camera_leaf_nodes_before = camera.get_own_leaf_node();
+        let app_leaf_nodes_before = app.get_own_leaf_node();
 
-        //Camera performs an MLS update, but does not send the update.
-        camera.perform_update(GROUP_NAME.to_string()).unwrap();
+        //Camera performs an MLS update
+        let (commit_msg, _) = camera.update().unwrap();
+        camera.save_group_state().unwrap();
 
-        //Camera sends the second messages
-        let message2 = "Hello, again!".to_string();
-        camera
-            .send(message2.clone().as_bytes(), GROUP_NAME.to_string())
+        //Camera generates another message for the app
+        let msg = format!("Hello, app! -- 2");
+        let msg_enc = camera
+            .encrypt(msg.as_bytes())
             .unwrap();
+        camera.save_group_state().unwrap();
 
-        //App receives the message, but cannot encrypt it (hence the message is dropped).
-        let mut message2_received = false;
-        let callback = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> {
-            message2_received = true;
+        //App decrypts the message
+        let dec_result = app.decrypt(msg_enc, true);
+        app.save_group_state().unwrap();
+        assert!(dec_result.is_err());
 
-            Ok(())
-        };
+        // The app finally merges the commits.
+        app.decrypt(commit_msg, false).unwrap();
+        app.save_group_state().unwrap();
 
-        app.receive(callback).unwrap();
-        assert!(!message2_received);
+        // Compare the ratchet trees maintained by camera and app.
+        // They should match.
+        let camera_ratchet_tree = camera.get_ratchet_tree();
+        let app_ratchet_tree = app.get_ratchet_tree();
+        assert_eq!(camera_ratchet_tree, app_ratchet_tree);
 
-        //Camera finally sends the pending update.
-        camera.perform_update(GROUP_NAME.to_string()).unwrap();
-        camera.send_update(GROUP_NAME.to_string()).unwrap();
+        let camera_leaf_nodes_after = camera.get_own_leaf_node();
+        let app_leaf_nodes_after = app.get_own_leaf_node();
 
-        //App receives the update.
-        let callback_app = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> {
-            println!("contact_name = {:?}", _contact_name);
-            Ok(())
-        };
+        assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+        assert_eq!(app_leaf_nodes_before, app_leaf_nodes_after);
 
-        app.receive(callback_app).unwrap();
-
-        //Camera sends the third messages
-        let message3 = "Hello, again and again!".to_string();
-        camera
-            .send(message3.clone().as_bytes(), GROUP_NAME.to_string())
+        //Camera generates another message for the app
+        let msg = format!("Hello, app! -- 3");
+        let msg_enc = camera
+            .encrypt(msg.as_bytes())
             .unwrap();
+        camera.save_group_state().unwrap();
 
-        //App receives the message.
-        let mut message3_received = false;
-        let callback = |msg_bytes: Vec<u8>, contact_name: String| -> io::Result<()> {
-            message3_received = true;
-            assert!(contact_name == *"camera");
-            assert!(String::from_utf8(msg_bytes).unwrap() == message3);
+        //App successfully decrypts the message
+        let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+        app.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
 
-            Ok(())
-        };
+        assert!(msg == msg_dec);
+    }
 
-        app.receive(callback).unwrap();
-        assert!(message3_received);
+    /// This function is a complete, successful pairing process with built-in secrets.
+    /// It is used in other tests.
+    fn pair_with_two_more_apps(
+        camera: &mut MlsClient,
+        app: &mut MlsClient,
+    ) -> (MlsClient, MlsClient) {
+        fs::create_dir("test_data/app2").unwrap();
+        fs::create_dir("test_data/app3").unwrap();
 
-        camera.deregister().unwrap();
-        app.deregister().unwrap();
+        // Add the second app
+        let mut app2 = MlsClient::new(
+            "app2".to_string(),
+            true,
+            "test_data/app2".to_string(),
+            "app2".to_string(),
+            ClientType::App,
+        ).unwrap();
+
+        // Exchange key packages, create group, invite, and join
+        let camera_contact =
+            MlsClient::create_contact("app2", app2.key_package()).unwrap();
+        let app2_contact =
+            MlsClient::create_contact("camera", camera.key_package()).unwrap();
+
+        let new_secret = vec![2u8; NUM_SECRET_BYTES];
+
+        let (welcome_msg_vec, psk_proposal_vec, commit_msg_vec) = camera
+            .invite_with_secret(&camera_contact, new_secret.clone()).unwrap();
+        camera.save_group_state().unwrap();
+
+        app2.process_welcome_with_secret(app2_contact, welcome_msg_vec, new_secret.clone(), GROUP_NAME).unwrap();
+        app2.save_group_state().unwrap();
+
+        // App merges the psk_proposal and commit for the add operation
+        app.decrypt(psk_proposal_vec, false).unwrap();
+        app.decrypt_with_secret(commit_msg_vec, false, new_secret).unwrap();
+        app.save_group_state().unwrap();
+
+        // Add the third app
+        let mut app3 = MlsClient::new(
+            "app3".to_string(),
+            true,
+            "test_data/app3".to_string(),
+            "app3".to_string(),
+            ClientType::App,
+        ).unwrap();
+
+        let camera_contact =
+            MlsClient::create_contact("app3", app3.key_package()).unwrap();
+        let app3_contact =
+            MlsClient::create_contact("camera", camera.key_package()).unwrap();
+
+        let new_secret = vec![3u8; NUM_SECRET_BYTES];
+
+        let (welcome_msg_vec, psk_proposal_vec, commit_msg_vec) = camera
+            .invite_with_secret(&camera_contact, new_secret.clone()).unwrap();
+        camera.save_group_state().unwrap();
+
+        app3.process_welcome_with_secret(app3_contact, welcome_msg_vec, new_secret.clone(), GROUP_NAME).unwrap();
+        app3.save_group_state().unwrap();
+
+        app.decrypt(psk_proposal_vec.clone(), false).unwrap();
+        app.decrypt_with_secret(commit_msg_vec.clone(), false, new_secret.clone()).unwrap();
+        app.save_group_state().unwrap();
+        
+        app2.decrypt(psk_proposal_vec, false).unwrap();
+        app2.decrypt_with_secret(commit_msg_vec, false, new_secret).unwrap();
+        app2.save_group_state().unwrap();
+
+        (app2, app3)
     }
 
     #[test]
     /// Camera invites app and immediately sends a message to it.
-    /// It then issues an update, which the app receives.
-    /// The app then initializes.
-    /// The camera then sends another message for the app to receive.
-    fn app_reinit_test() {
+    /// It then invites two more apps and sends a message to all three apps.
+    fn add_more_apps() {
         let (mut camera, mut app) = pair();
 
-        // Camera sends a message
-        let message = "Hello, app!".to_string();
-        camera
-            .send(message.clone().as_bytes(), GROUP_NAME.to_string())
+        // Camera encrypts the message
+        let msg = "Hello, app!";
+        let msg_enc = camera
+            .encrypt(msg.as_bytes())
             .unwrap();
-        camera.save_groups_state();
+        camera.save_group_state().unwrap();
 
-        //App receives the message
-        let mut message_received = false;
-        let callback = |msg_bytes: Vec<u8>, contact_name: String| -> io::Result<()> {
-            message_received = true;
-            assert!(contact_name == *"camera");
-            assert!(String::from_utf8(msg_bytes).unwrap() == message);
+        //App decrypts the message
+        let msg_dec_vec = app.decrypt(msg_enc, true).unwrap();
+        app.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
 
-            Ok(())
-        };
+        assert!(msg == msg_dec);
 
-        app.receive(callback).unwrap();
-        app.save_groups_state();
-        assert!(message_received);
+        let (mut app2, mut app3) = pair_with_two_more_apps(&mut camera, &mut app);
 
-        //Camera performs an MLS update.
-        camera.perform_update(GROUP_NAME.to_string()).unwrap();
-        camera.save_groups_state();
-        camera.send_update(GROUP_NAME.to_string()).unwrap();
+        // Camera encrypts a new message
+        let msg = "Hello, apps!";
+        let msg_enc = camera
+            .encrypt(msg.as_bytes())
+            .unwrap();
+        camera.save_group_state().unwrap();
 
-        //App receives the update.
-        let callback_app = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> {
-            println!("contact_name = {:?}", _contact_name);
-            Ok(())
-        };
+        //App decrypts the message
+        let msg_dec_vec = app.decrypt(msg_enc.clone(), true).unwrap();
+        app.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
 
-        app.receive(callback_app).unwrap();
-        app.save_groups_state();
+        assert!(msg == msg_dec);
 
-        // App reinitializes
+        //App2 decrypts the message
+        let msg_dec_vec = app2.decrypt(msg_enc.clone(), true).unwrap();
+        app2.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+        assert!(msg == msg_dec);
+
+        //App3 decrypts the message
+        let msg_dec_vec = app3.decrypt(msg_enc, true).unwrap();
+        app3.save_group_state().unwrap();
+        let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+        assert!(msg == msg_dec);
+    }
+
+    #[test]
+    /// Camera invites three apps and immediately sends a message to them.
+    /// It then does a self update and sends another message.
+    /// This repeats a few times.
+    /// On every other iteration, apps also generate update
+    /// proposals and ask the camera to commit them.
+    fn update_test_with_more_apps() {
+        let (mut camera, mut app) = pair();
+        let (mut app2, mut app3) = pair_with_two_more_apps(&mut camera, &mut app);
+
+        for i in 0..10 {
+            let msg = format!("Hello, app! -- {i}");
+            let msg_enc = camera
+                .encrypt(msg.as_bytes())
+                .unwrap();
+            camera.save_group_state().unwrap();
+
+            //App decrypts the message
+            let msg_dec_vec = app.decrypt(msg_enc.clone(), true).unwrap();
+            app.save_group_state().unwrap();
+            let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+            assert!(msg == msg_dec);
+
+            //App2 decrypts the message
+            let msg_dec_vec = app2.decrypt(msg_enc.clone(), true).unwrap();
+            app2.save_group_state().unwrap();
+            let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+            assert!(msg == msg_dec);
+
+            //App3 decrypts the message
+            let msg_dec_vec = app3.decrypt(msg_enc, true).unwrap();
+            app3.save_group_state().unwrap();
+            let msg_dec = std::str::from_utf8(&msg_dec_vec).unwrap();
+
+            assert!(msg == msg_dec);
+
+            let camera_leaf_nodes_before = camera.get_own_leaf_node();
+            let app_leaf_nodes_before = app.get_own_leaf_node();
+            let app2_leaf_nodes_before = app2.get_own_leaf_node();
+            let app3_leaf_nodes_before = app3.get_own_leaf_node();
+
+            //Camera performs an MLS update and send the commit to the apps.
+            let (commit_msg, _) = camera.update().unwrap();
+            camera.save_group_state().unwrap();
+
+            // The apps merge the commit.
+            app.decrypt(commit_msg.clone(), false).unwrap();
+            app.save_group_state().unwrap();
+            app2.decrypt(commit_msg.clone(), false).unwrap();
+            app2.save_group_state().unwrap();
+            app3.decrypt(commit_msg, false).unwrap();
+            app3.save_group_state().unwrap();
+
+            // Compare the ratchet trees maintained by camera and apps.
+            // They should match.
+            let camera_ratchet_tree = camera.get_ratchet_tree();
+            let app_ratchet_tree = app.get_ratchet_tree();
+            let app2_ratchet_tree = app2.get_ratchet_tree();
+            let app3_ratchet_tree = app3.get_ratchet_tree();
+            assert_eq!(camera_ratchet_tree, app_ratchet_tree);
+            assert_eq!(camera_ratchet_tree, app2_ratchet_tree);
+            assert_eq!(camera_ratchet_tree, app3_ratchet_tree);
+
+            let camera_leaf_nodes_after = camera.get_own_leaf_node();
+            let app_leaf_nodes_after = app.get_own_leaf_node();
+            let app2_leaf_nodes_after = app2.get_own_leaf_node();
+            let app3_leaf_nodes_after = app3.get_own_leaf_node();
+
+            if i % 2 == 0 {
+                // In these iterations, only the camera should be updated.
+                assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+                assert_eq!(app_leaf_nodes_before, app_leaf_nodes_after);
+                assert_eq!(app2_leaf_nodes_before, app2_leaf_nodes_after);
+                assert_eq!(app3_leaf_nodes_before, app3_leaf_nodes_after);
+
+                let app_update_proposal = app.update_proposal().unwrap();
+                camera.decrypt(app_update_proposal.clone(), false).unwrap();
+                app2.decrypt(app_update_proposal.clone(), false).unwrap();
+                app3.decrypt(app_update_proposal, false).unwrap();
+
+                let app2_update_proposal = app2.update_proposal().unwrap();
+                camera.decrypt(app2_update_proposal.clone(), false).unwrap();
+                app.decrypt(app2_update_proposal.clone(), false).unwrap();
+                app3.decrypt(app2_update_proposal, false).unwrap();
+
+                let app3_update_proposal = app3.update_proposal().unwrap();
+                camera.decrypt(app3_update_proposal.clone(), false).unwrap();
+                app.decrypt(app3_update_proposal.clone(), false).unwrap();
+                app2.decrypt(app3_update_proposal, false).unwrap();
+
+                camera.save_group_state().unwrap();
+                app.save_group_state().unwrap();
+                app2.save_group_state().unwrap();
+                app3.save_group_state().unwrap();
+            } else {
+                // In these iterations, the camera and the apps should all be updated.
+                assert_ne!(camera_leaf_nodes_before, camera_leaf_nodes_after);
+                assert_ne!(app_leaf_nodes_before, app_leaf_nodes_after);
+                assert_ne!(app2_leaf_nodes_before, app2_leaf_nodes_after);
+                assert_ne!(app3_leaf_nodes_before, app3_leaf_nodes_after);
+            }
+        }
+    }
+
+    fn generate_dummy_file(
+        pathname: &str,
+        file_size: usize,
+    ) {
+        let mut video_file = File::create(pathname).unwrap();
+
+        let chunk_size = 8192;
+        let buffer = vec![0u8; chunk_size];
+
+        let mut remaining = file_size;
+
+        while remaining > 0 {
+            let write_size = remaining.min(chunk_size);
+            video_file.write_all(&buffer[..write_size]).unwrap();
+            remaining -= write_size;
+        }
+    }
+
+    fn check_decrypted_dummy_file(
+        dec_pathname: &str,
+        expected_file_size: usize,
+    ) {
+        let dec_video_file = File::open(dec_pathname).unwrap();
+        let metadata = dec_video_file.metadata().unwrap();
+
+        let dec_size = metadata.len();
+        assert!(dec_size == expected_file_size as u64);
+
+        // Check all bytes are zero
+        let mut reader = io::BufReader::new(dec_video_file);
+        let mut dec_buffer = [0u8; 8192];
+
+        loop {
+            let bytes_read = reader.read(&mut dec_buffer).unwrap();
+            if bytes_read == 0 {
+                break;
+            }
+
+            assert!(!dec_buffer[..bytes_read].iter().any(|&b| b != 0));
+        }
+    }
+
+    #[test]
+    /// Camera invites app and immediately sends a video to it.
+    fn camera_to_app_video_test() {
+        let (mut camera, mut app) = pair();
+
+        // Create input video file to be encrypted (all 0's)
+        let video_pathname = "test_data/video_file";
+        let file_size: usize = 96 * 1024 + 135;
+
+        generate_dummy_file(video_pathname, file_size);
+
+        // Camera encrypts video file
+        let enc_video_pathname = "test_data/enc_video_file";
+
+        encrypt_video_file(
+            &mut camera,
+            video_pathname,
+            enc_video_pathname,
+            0,
+        ).unwrap();
+
+        // App decrypts video file
+        fs::create_dir("test_data/app/videos").unwrap();
+
+        let dec_video_filename = decrypt_video_file(
+            &mut app,
+            enc_video_pathname,
+        ).unwrap();
+
+        let dec_video_pathname = format!("test_data/app/videos/{}", dec_video_filename);
+
+        // Check decrypted file
+        check_decrypted_dummy_file(&dec_video_pathname, file_size);
+    }
+
+    #[test]
+    /// Camera invites app and immediately sends a video to it.
+    fn camera_to_app_thumbnail_test() {
+        let (mut camera, mut app) = pair();
+
+        // Create input thumbnail file to be encrypted (all 0's)
+        let thumbnail_pathname = "test_data/thumbnail_file";
+        let file_size: usize = 1069;
+
+        generate_dummy_file(thumbnail_pathname, file_size);
+
+        // Camera encrypts thumbnail file
+        let enc_thumbnail_pathname = "test_data/enc_thumbnail_file";
+        let mut thumbnail_info =
+                    ThumbnailMetaInfo::new(0, 0, vec![]);
+
+        encrypt_thumbnail_file(
+            &mut camera,
+            thumbnail_pathname,
+            enc_thumbnail_pathname,
+            &mut thumbnail_info,
+        ).unwrap();
+
+        // App decrypts thumbnail file
+        fs::create_dir("test_data/app/videos").unwrap();
+
+        let dec_thumbnail_filename = decrypt_thumbnail_file(
+            &mut app,
+            enc_thumbnail_pathname,
+            "test_data",
+        ).unwrap();
+
+        let dec_thumbnail_pathname = format!("test_data/app/videos/{}", dec_thumbnail_filename);
+
+        // Check decrypted file
+        check_decrypted_dummy_file(&dec_thumbnail_pathname, file_size);
+    }
+
+    #[test]
+    /// Camera invites app and immediately sends two videos to it.
+    /// The first video is however "lost".
+    /// The app tries to decrypt the second video and it fails.
+    fn camera_to_app_missed_video_test() {
+        let (mut camera, mut app) = pair();
+
+        // Create input video file to be encrypted (all 0's)
+        let video_pathname = "test_data/video_file";
+        let file_size: usize = 96 * 1024 + 135;
+
+        generate_dummy_file(video_pathname, file_size);
+
+        // Camera encrypts the first video file.
+        let enc_first_video_pathname = "test_data/enc_video_file_0";
+
+        encrypt_video_file(
+            &mut camera,
+            video_pathname,
+            enc_first_video_pathname,
+            0,
+        ).unwrap();
+
+        // First video is "lost".
+
+        // Camera encrypts the second video file.
+        let enc_second_video_pathname = "test_data/enc_video_file_1";
+
+        encrypt_video_file(
+            &mut camera,
+            video_pathname,
+            enc_second_video_pathname,
+            1,
+        ).unwrap();
+
+        // App tries to decrypt the video file
+        fs::create_dir("test_data/app/videos").unwrap();
+
+        let ret = decrypt_video_file(
+            &mut app,
+            enc_second_video_pathname,
+        );
+
+        assert!(ret.is_err());
+    }
+
+    #[test]
+    /// Camera invites app and immediately sends two thumbnails to it.
+    /// The first thumbnail is however "lost".
+    /// The app tries to decrypt the second thumbnail and it fails.
+    fn camera_to_app_missed_thumbnail_test() {
+        let (mut camera, mut app) = pair();
+
+        // Create input thumbnail file to be encrypted (all 0's)
+        let thumbnail_pathname = "test_data/thumbnail_file";
+        let file_size: usize = 1069;
+
+        generate_dummy_file(thumbnail_pathname, file_size);
+
+        // Camera encrypts the first thumbnail file
+        let enc_first_thumbnail_pathname = "test_data/enc_thumbnail_file_0";
+        let mut first_thumbnail_info =
+                    ThumbnailMetaInfo::new(0, 0, vec![]);
+
+        encrypt_thumbnail_file(
+            &mut camera,
+            thumbnail_pathname,
+            enc_first_thumbnail_pathname,
+            &mut first_thumbnail_info,
+        ).unwrap();
+
+        // First video is "lost".
+
+        // Camera encrypts the second thumbnail file
+        let enc_second_thumbnail_pathname = "test_data/enc_thumbnail_file_1";
+        let mut second_thumbnail_info =
+                    ThumbnailMetaInfo::new(0, 0, vec![]);
+
+        encrypt_thumbnail_file(
+            &mut camera,
+            thumbnail_pathname,
+            enc_second_thumbnail_pathname,
+            &mut second_thumbnail_info,
+        ).unwrap();
+
+        // App tries to decrypt the second thumbnail file
+        fs::create_dir("test_data/app/videos").unwrap();
+
+        let ret = decrypt_thumbnail_file(
+            &mut app,
+            enc_second_thumbnail_pathname,
+            "test_data",
+        );
+
+        assert!(ret.is_err());
+    }
+
+    fn camera_to_app_video_decrypt_crash(
+        crash_site: &str,
+        crash_site_returns_err: bool,
+    ) {
+        let (mut camera, mut app) = pair();
+
+        // Create input video file to be encrypted (all 0's)
+        let video_pathname = "test_data/video_file";
+        let file_size: usize = 96 * 1024 + 135;
+
+        generate_dummy_file(video_pathname, file_size);
+
+        // Camera encrypts video file
+        let enc_video_pathname = "test_data/enc_video_file";
+
+        encrypt_video_file(
+            &mut camera,
+            video_pathname,
+            enc_video_pathname,
+            0,
+        ).unwrap();
+
+        // App tires to decrypt video file but it "crashes" halfway.
+        fs::create_dir("test_data/app/videos").unwrap();
+
+        std::env::set_var(crash_site, "1");
+        let ret = decrypt_video_file(
+            &mut app,
+            enc_video_pathname,
+        );
+
+        if crash_site_returns_err {
+            assert!(ret.is_err());
+        }
+
+        std::env::remove_var(crash_site);
+
+        // App reinitializes, tries to decrypt again, and succeeds.
         let mut app = reinitialize_app();
 
-        // Camera sends the second message
-        let message = "Hello, app, again!".to_string();
-        camera
-            .send(message.clone().as_bytes(), GROUP_NAME.to_string())
-            .unwrap();
-        camera.save_groups_state();
+        let dec_video_filename = decrypt_video_file(
+            &mut app,
+            enc_video_pathname,
+        ).unwrap();
 
-        //App receives the message
-        let mut message_received = false;
-        let callback = |msg_bytes: Vec<u8>, contact_name: String| -> io::Result<()> {
-            message_received = true;
-            assert!(contact_name == *"camera");
-            assert!(String::from_utf8(msg_bytes).unwrap() == message);
+        let dec_video_pathname = format!("test_data/app/videos/{}", dec_video_filename);
 
-            Ok(())
-        };
+        // Check decrypted file
+        check_decrypted_dummy_file(&dec_video_pathname, file_size);
+    }
 
-        app.receive(callback).unwrap();
-        app.save_groups_state();
-        assert!(message_received);
+    #[test]
+    /// Camera invites app and immediately sends a video to it.
+    /// The app tries to decrypt the video, but crashes halfway.
+    /// It then tries again and decrypts it successfully.
+    fn camera_to_app_video_decrypt_crash_test_1() {
+        camera_to_app_video_decrypt_crash("DECRYPT_VIDEO_FILE_CRASH", true);
+    }
 
-        camera.deregister().unwrap();
-        app.deregister().unwrap();
+    #[test]
+    fn camera_to_app_video_decrypt_crash_test_2() {
+        camera_to_app_video_decrypt_crash("SAVE_GROUP_STATE_CRASH", false);
+    }
+
+    #[test]
+    /// Camera invites app and immediately sends a thumbnail to it.
+    /// The app tries to decrypt the thumbnail, but crashes halfway.
+    /// It then tries again and decrypts it successfully.
+    fn camera_to_app_thumbnail_decrypt_crash_test() {
+        let (mut camera, mut app) = pair();
+
+        // Create input thumbnail file to be encrypted (all 0's)
+        let thumbnail_pathname = "test_data/thumbnail_file";
+        let file_size: usize = 1069;
+
+        generate_dummy_file(thumbnail_pathname, file_size);
+
+        // Camera encrypts thumbnail file
+        let enc_thumbnail_pathname = "test_data/enc_thumbnail_file";
+        let mut thumbnail_info =
+                    ThumbnailMetaInfo::new(0, 0, vec![]);
+
+        encrypt_thumbnail_file(
+            &mut camera,
+            thumbnail_pathname,
+            enc_thumbnail_pathname,
+            &mut thumbnail_info,
+        ).unwrap();
+
+        // App tires to decrypt thumbnail file but it "crashes" halfway.
+        fs::create_dir("test_data/app/videos").unwrap();
+
+        std::env::set_var("DECRYPT_THUMBNAIL_FILE_CRASH", "1");
+        let ret = decrypt_thumbnail_file(
+            &mut app,
+            enc_thumbnail_pathname,
+            "test_data",
+        );
+
+        assert!(ret.is_err());
+
+        std::env::remove_var("DECRYPT_THUMBNAIL_FILE_CRASH");
+
+        // App reinitializes, tries to decrypt again, and succeeds.
+        let mut app = reinitialize_app();
+
+        let dec_thumbnail_filename = decrypt_thumbnail_file(
+            &mut app,
+            enc_thumbnail_pathname,
+            "test_data",
+        ).unwrap();
+
+        let dec_thumbnail_pathname = format!("test_data/app/videos/{}", dec_thumbnail_filename);
+
+        // Check decrypted file
+        check_decrypted_dummy_file(&dec_thumbnail_pathname, file_size);
     }
 }

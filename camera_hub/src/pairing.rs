@@ -5,9 +5,10 @@
 use crate::initialize_mls_clients;
 use crate::traits::Camera;
 use cfg_if::cfg_if;
+use openmls::prelude::KeyPackage;
 use rand::Rng;
 use secluso_client_lib::http_client::HttpClient;
-use secluso_client_lib::mls_client::{KeyPackages, MlsClient};
+use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
 use secluso_client_lib::pairing;
  use secluso_client_lib::pairing::generate_ip_camera_secret;
@@ -101,16 +102,16 @@ fn receive_timestamp_set_system_time(stream: &mut TcpStream) -> io::Result<()> {
 
 fn perform_pairing_handshake(
     stream: &mut TcpStream,
-    camera_key_packages: KeyPackages,
-) -> anyhow::Result<KeyPackages> {
-    let pairing = pairing::Camera::new(camera_key_packages);
+    camera_key_package: KeyPackage,
+) -> anyhow::Result<KeyPackage> {
+    let pairing = pairing::Camera::new(camera_key_package);
 
     let app_msg = read_varying_len(stream)?;
-    let (app_key_packages, camera_msg) =
+    let (app_key_package, camera_msg) =
         pairing.process_app_msg_and_generate_msg_to_app(app_msg)?;
     write_varying_len(stream, &camera_msg)?;
 
-    Ok(app_key_packages)
+    Ok(app_key_package)
 }
 
 pub fn get_input_camera_secret() -> Vec<u8> {
@@ -125,28 +126,21 @@ pub fn get_input_camera_secret() -> Vec<u8> {
     data.to_vec()
 }
 
-fn pair_with_app(
-    stream: &mut TcpStream,
-    camera_key_packages: KeyPackages,
-) -> anyhow::Result<KeyPackages> {
-    perform_pairing_handshake(stream, camera_key_packages)
-}
-
 fn invite(
     stream: &mut TcpStream,
     mls_client: &mut MlsClient,
-    app_key_packages: KeyPackages,
+    app_key_package: KeyPackage,
     camera_secret: Vec<u8>,
 ) -> io::Result<()> {
-    let app_contact = MlsClient::create_contact("app", app_key_packages)?;
+    let app_contact = MlsClient::create_contact("app", app_key_package)?;
     debug!("Added contact.");
 
-    let welcome_msg_vec = mls_client
-        .invite(&app_contact, camera_secret)
+    let (welcome_msg_vec, _, _) = mls_client
+        .invite_with_secret(&app_contact, camera_secret)
         .inspect_err(|_| {
             error!("invite() returned error:");
         })?;
-    mls_client.save_group_state();
+    mls_client.save_group_state().unwrap();
     debug!("App invited to the group.");
 
     write_varying_len(stream, &welcome_msg_vec)?;
@@ -160,7 +154,7 @@ fn invite(
 
 fn decrypt_msg(mls_client: &mut MlsClient, msg: Vec<u8>) -> io::Result<Vec<u8>> {
     let decrypted_msg = mls_client.decrypt(msg, true)?;
-    mls_client.save_group_state();
+    mls_client.save_group_state().unwrap();
 
     Ok(decrypted_msg)
 }
@@ -181,7 +175,7 @@ fn receive_credentials_full(stream: &mut TcpStream, mls_client: &mut MlsClient) 
 fn send_firmware_version(stream: &mut TcpStream, mls_client: &mut MlsClient) -> io::Result<()> {
     let msg = format!("v{}", env!("CARGO_PKG_VERSION"));
     let encrypted_msg = mls_client.encrypt(msg.as_bytes())?;
-    mls_client.save_group_state();
+    mls_client.save_group_state().unwrap();
 
     write_varying_len(stream, &encrypted_msg)?;
 
@@ -400,12 +394,12 @@ pub fn pair_all(
                     if success {
                         debug!("[Pairing] Before pairing");
                         for mls_client in mls_clients_ref.iter_mut() {
-                            match pair_with_app(&mut stream, mls_client.key_packages()) {
-                                Ok(app_key_packages) => {
+                            match perform_pairing_handshake(&mut stream, mls_client.key_package()) {
+                                Ok(app_key_package) => {
                                     if let Err(e) = invite(
                                         &mut stream,
                                         mls_client,
-                                        app_key_packages,
+                                        app_key_package,
                                         secret.clone(),
                                     ) {
                                         debug!("[Pairing] Failed to create group: {e}");
@@ -423,6 +417,7 @@ pub fn pair_all(
                     }
 
                     if success {
+                        debug!("[Pairing] Before receiving credentials");
                         match receive_credentials_full(&mut stream, &mut mls_clients[CONFIG]) {
                             Ok(()) => {}
                             Err(e) => {
@@ -433,6 +428,7 @@ pub fn pair_all(
                     }
 
                     let http_client = if success {
+                        debug!("[Pairing] Before parsing credentials");
                         let (server_username, server_password, server_addr) =
                             read_parse_full_credentials();
                         Some(HttpClient::new(
@@ -446,6 +442,7 @@ pub fn pair_all(
                     };
 
                     if success {
+                        debug!("[Pairing] Before sending firmware version");
                         match send_firmware_version(&mut stream, &mut mls_clients[CONFIG]) {
                             Ok(()) => {}
                             Err(e) => {

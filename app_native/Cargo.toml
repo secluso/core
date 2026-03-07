@@ -16,6 +16,7 @@ anyhow = "^1.0.64" # Locked to this version due to flutter_rust_bridge usage in 
 flutter_rust_bridge = "=2.10.0"
 serde = "1.0"
 serde_derive = "1.0"
+openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.0" }
 
 [features]
 default = []

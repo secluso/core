@@ -9,6 +9,7 @@ pub mod pairing;
 pub mod tests;
 pub mod thumbnail_meta_info;
 pub mod video_net_info;
+pub mod video;
 
 #[cfg(feature = "http_client")]
 pub mod http_client;

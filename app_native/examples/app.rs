@@ -3,9 +3,9 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use secluso_app_native::{
-    add_camera, decrypt_video, deregister, generate_heartbeat_request_config_command,
+    Clients, add_camera, decrypt_video, deregister, generate_heartbeat_request_config_command,
     get_group_name, initialize, livestream_decrypt, livestream_update,
-    process_heartbeat_config_response, Clients,
+    process_heartbeat_config_response,
 };
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
@@ -30,6 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const CAMERA_ADDR: &str = "127.0.0.1";
 const CAMERA_NAME: &str = "Camera";
 const DATA_DIR: &str = "example_app_data";
+const APP_TAG: &str = "app";
 
 fn main() -> io::Result<()> {
     let mut test_motion = false;
@@ -53,7 +54,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    let file = File::open("user_credentials").expect("Cannot open file to send");
+    let file = File::open("user_credentials").expect("Cannot open file to read");
     let mut reader =
         BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
     let credentials_full = reader.fill_buf().unwrap();
@@ -65,22 +66,22 @@ fn main() -> io::Result<()> {
         BufReader::with_capacity(file2.metadata().unwrap().len().try_into().unwrap(), file2);
     let secret_vec = reader2.fill_buf().unwrap();
 
-    fs::create_dir_all(format!("{}/videos", DATA_DIR)).unwrap();
-    fs::create_dir_all(format!("{}/encrypted", DATA_DIR)).unwrap();
+    fs::create_dir_all(format!("{}/{}/videos", DATA_DIR, APP_TAG)).unwrap();
+    fs::create_dir_all(format!("{}/{}/encrypted", DATA_DIR, APP_TAG)).unwrap();
 
-    let first_time_path = Path::new(DATA_DIR).join("first_time_done");
-    let first_time: bool = !first_time_path.exists();
+    let app_first_time_path = Path::new(DATA_DIR).join(APP_TAG).join("first_time_done");
+    let app_first_time: bool = !app_first_time_path.exists();
 
     let clients: Arc<Mutex<Option<Box<Clients>>>> = Arc::new(Mutex::new(None));
     let http_client = HttpClient::new(server_addr, server_username, server_password);
 
-    if first_time {
+    if app_first_time {
         if reset {
             panic!("No state to reset!");
         }
 
-        initialize(&mut clients.lock().unwrap(), DATA_DIR.to_string(), true)?;
-
+        initialize(&mut clients.lock().unwrap(), format!("{}/{}", DATA_DIR, APP_TAG), true)?;
+        
         let credentials_full_string = String::from_utf8(credentials_full.to_vec()).unwrap();
 
         let add_camera_result = add_camera(
@@ -102,9 +103,9 @@ fn main() -> io::Result<()> {
             ));
         }
 
-        File::create(&first_time_path).expect("Could not create file");
+        File::create(&app_first_time_path).expect("Could not create file");
     } else {
-        initialize(&mut clients.lock().unwrap(), DATA_DIR.to_string(), false)?;
+        initialize(&mut clients.lock().unwrap(), format!("{}/{}", DATA_DIR, APP_TAG), false)?;
 
         if reset {
             return deregister_all(clients, &http_client);
@@ -112,7 +113,7 @@ fn main() -> io::Result<()> {
     }
 
     if test_motion {
-        motion_loop(Arc::clone(&clients), &http_client, true)?;
+        motion_loop(Arc::clone(&clients), &http_client, true, APP_TAG)?;
         return Ok(());
     }
 
@@ -129,14 +130,14 @@ fn main() -> io::Result<()> {
     // This thread is used for receiving motion videos
     println!("Launching a thread to listen for motion videos.");
     thread::spawn(move || {
-        let _ = motion_loop(clients_clone, &http_client_clone, false);
+        let _ = motion_loop(clients_clone, &http_client_clone, false, APP_TAG);
         println!("Motion loop exited!");
     });
 
     // This thread is used for sending heartbeats to the camera
     println!("Launching a thread to periodically send heartbeats to the camera.");
     thread::spawn(move || {
-        let _ = heartbeat_loop(clients_clone_2, &http_client_clone_2);
+        let _ = heartbeat_loop(clients_clone_2, &http_client_clone_2, APP_TAG);
         println!("Heartbeat loop exited!");
     });
 
@@ -164,6 +165,7 @@ fn deregister_all(
 fn heartbeat_loop(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
+    tag: &str,
 ) -> io::Result<()> {
     let mut ignored_heartbeats = 0;
 
@@ -186,7 +188,7 @@ fn heartbeat_loop(
             println!("Attempt {_i}");
             thread::sleep(Duration::from_secs(2));
             // We want to fetch all pending videos before checking for the heartbeat response.
-            fetch_all_motion_videos(Arc::clone(&clients), http_client);
+            fetch_all_motion_videos(Arc::clone(&clients), http_client, tag);
             match http_client.fetch_config_response(&config_group_name) {
                 Ok(resp) => {
                     config_response_opt = Some(resp);
@@ -245,9 +247,9 @@ fn heartbeat_loop(
     }
 }
 
-fn fetch_all_motion_videos(clients: Arc<Mutex<Option<Box<Clients>>>>, http_client: &HttpClient) {
+fn fetch_all_motion_videos(clients: Arc<Mutex<Option<Box<Clients>>>>, http_client: &HttpClient, tag: &str) {
     loop {
-        if let Err(_) = fetch_motion_video(Arc::clone(&clients), http_client) {
+        if let Err(_) = fetch_motion_video(Arc::clone(&clients), http_client, tag) {
             return;
         }
     }
@@ -256,9 +258,10 @@ fn fetch_all_motion_videos(clients: Arc<Mutex<Option<Box<Clients>>>>, http_clien
 fn fetch_motion_video(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
+    tag: &str,
 ) -> io::Result<()> {
     let mut clients_locked = clients.lock().unwrap();
-    let epoch_file_path = Path::new(DATA_DIR).join("motion_epoch");
+    let epoch_file_path = Path::new(DATA_DIR).join(tag).join("motion_epoch");
 
     let mut epoch: u64 = if epoch_file_path.exists() {
         let file = File::open(&epoch_file_path).expect("Cannot open motion_epoch file");
@@ -274,11 +277,11 @@ fn fetch_motion_video(
     let group_name = get_group_name(&mut clients_locked, "motion")?;
 
     let enc_filename = format!("{}", epoch);
-    let enc_filepath = Path::new(DATA_DIR).join("encrypted").join(&enc_filename);
+    let enc_filepath = Path::new(DATA_DIR).join(tag).join("encrypted").join(&enc_filename);
     match http_client.fetch_enc_video(&group_name, &enc_filepath) {
         Ok(_) => {
-            let dec_filename = decrypt_video(&mut clients_locked, enc_filename, epoch).unwrap();
-            println!("Received and decrypted file: {}", dec_filename);
+            let dec_filename = decrypt_video(&mut clients_locked, enc_filename).unwrap();
+            println!("{}: Received and decrypted file: {}", tag, dec_filename);
             let _ = fs::remove_file(enc_filepath);
             epoch += 1;
 
@@ -302,10 +305,11 @@ fn motion_loop(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
     one_video_only: bool,
+    tag: &str,
 ) -> io::Result<()> {
     let mut iter = 0;
     loop {
-        match fetch_motion_video(Arc::clone(&clients), http_client) {
+        match fetch_motion_video(Arc::clone(&clients), http_client, tag) {
             Ok(_) => {
                 if one_video_only {
                     return Ok(());

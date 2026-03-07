@@ -2,7 +2,7 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use crate::mls_client::KeyPackages;
+use openmls::prelude::KeyPackage;
 use serde::{Deserialize, Serialize};
 use qrcode::QrCode;
 use image::Luma;
@@ -40,7 +40,7 @@ enum PairingMsgType {
 #[derive(Serialize, Deserialize)]
 struct PairingMsgContent {
     msg_type: PairingMsgType,
-    key_packages: KeyPackages,
+    key_package: KeyPackage,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,7 +49,7 @@ struct PairingMsg {
 }
 
 pub struct App {
-    key_packages: KeyPackages,
+    key_package: KeyPackage,
 }
 
 
@@ -112,14 +112,14 @@ pub fn generate_raspberry_camera_secret(dir: String) -> anyhow::Result<()> {
 
 
 impl App {
-    pub fn new(key_packages: KeyPackages) -> Self {
-        Self { key_packages }
+    pub fn new(key_package: KeyPackage) -> Self {
+        Self { key_package }
     }
 
     pub fn generate_msg_to_camera(&self) -> Vec<u8> {
         let msg_content = PairingMsgContent {
             msg_type: PairingMsgType::AppToCameraMsg,
-            key_packages: self.key_packages.clone(),
+            key_package: self.key_package.clone(),
         };
         let msg_content_vec = bincode::serialize(&msg_content).unwrap();
 
@@ -130,7 +130,7 @@ impl App {
         bincode::serialize(&msg).unwrap()
     }
 
-    pub fn process_camera_msg(&self, camera_msg_vec: Vec<u8>) -> anyhow::Result<KeyPackages> {
+    pub fn process_camera_msg(&self, camera_msg_vec: Vec<u8>) -> anyhow::Result<KeyPackage> {
         let camera_msg: PairingMsg = bincode::deserialize(&camera_msg_vec)?;
 
         let camera_msg_content: PairingMsgContent = bincode::deserialize(&camera_msg.content_vec)?;
@@ -139,24 +139,24 @@ impl App {
             panic!("Received invalid pairing message!");
         }
 
-        Ok(camera_msg_content.key_packages)
+        Ok(camera_msg_content.key_package)
     }
 }
 
 pub struct Camera {
-    key_packages: KeyPackages,
+    key_package: KeyPackage,
 }
 
 impl Camera {
     // FIXME: identical to App::new()
-    pub fn new(key_packages: KeyPackages) -> Self {
-        Self { key_packages }
+    pub fn new(key_package: KeyPackage) -> Self {
+        Self { key_package }
     }
 
     pub fn process_app_msg_and_generate_msg_to_app(
         &self,
         app_msg_vec: Vec<u8>,
-    ) -> anyhow::Result<(KeyPackages, Vec<u8>)> {
+    ) -> anyhow::Result<(KeyPackage, Vec<u8>)> {
         let app_msg: PairingMsg = bincode::deserialize(&app_msg_vec).unwrap();
 
         let app_msg_content: PairingMsgContent =
@@ -170,7 +170,7 @@ impl Camera {
         // Generate response
         let msg_content = PairingMsgContent {
             msg_type: PairingMsgType::CameraToAppMsg,
-            key_packages: self.key_packages.clone(),
+            key_package: self.key_package.clone(),
         };
         let msg_content_vec = bincode::serialize(&msg_content).unwrap();
 
@@ -180,6 +180,6 @@ impl Camera {
 
         let resp_msg_vec = bincode::serialize(&resp_msg).unwrap();
 
-        Ok((app_msg_content.key_packages, resp_msg_vec))
+        Ok((app_msg_content.key_package, resp_msg_vec))
     }
 }

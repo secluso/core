@@ -7,43 +7,45 @@
 
 use super::identity::Identity;
 use super::openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto;
+use openmls::test_utils::StorageProviderTrait;
 use crate::pairing;
-use ds_lib::GroupMessage;
 use openmls::prelude::*;
 use openmls::schedule::{ExternalPsk, PreSharedKeyId, Psk};
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Write, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::cmp;
+use std::path::{Path, PathBuf};
 use tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize};
+
+#[cfg(test)]
+use openmls::treesync::RatchetTree;
 
 // Post-quantum secure ciphersuite: https://blog.openmls.tech/posts/2024-04-11-pq-openmls/
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_XWING_CHACHA20POLY1305_SHA256_Ed25519;
 
-// Checkpoints are a separate, *short-lived* MLS state snapshot used only during
-// decrypt. They are not part of the normal state rotation and are cleared on
-// success, so we can safely roll back after a crash without weakening the
-// long-term forward secrecy guarantees for other message flows.
-const CHECKPOINT_GROUP_PREFIX: &str = "checkpoint_group_state_";
-const CHECKPOINT_KEY_PREFIX: &str = "checkpoint_key_store_";
-
-pub type KeyPackages = Vec<(Vec<u8>, KeyPackage)>;
+const CURRENT_FILE: &str = "CURRENT";
+const GROUP_STATE_FILENAME: &str = "group_state";
+const KEY_STORE_FILENAME: &str = "key_store";
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct Contact {
     username: String,
     id: Vec<u8>,
-    //FIXME: do we need to keep key_packages?
-    key_packages: KeyPackages,
+    //FIXME: do we need to keep the key_package?
+    key_package: KeyPackage,
     update_proposal: Option<QueuedProposal>,
     last_update_timestamp: u64,
+    // Used by the camera. admin_contact is the first app that pairs
+    // with the camera. Only the admin_contact can add other apps.
+    admin_contact: bool,
 }
 
 impl Contact {
     pub fn get_credential(&self) -> Credential {
-        self.key_packages[0].1.leaf_node().credential().clone()
+        self.key_package.leaf_node().credential().clone()
     }
 }
 
@@ -57,11 +59,12 @@ pub struct Group {
     // to exchange encrypted data via the delivery service.
     group_name: String,
     mls_group: MlsGroup,
-    // The "only" contact that is also in this group.
-    only_contact: Option<Contact>,
+    contacts: Vec<Contact>,
+    // Used by the app. True if we are the admin_contact of the camera.
+    is_admin: bool,
 }
 
-/// MlsGroup ins Group cannot be serialized, but it is stored in storage provider.
+/// MlsGroup in Group cannot be serialized, but it is stored in storage provider.
 /// Therefore, we use GroupHelper to serialize other fields.
 /// Upon deserialization, we read MlsGroup from the storage provider.
 #[derive(Serialize, Deserialize)]
@@ -70,7 +73,8 @@ struct GroupHelper {
     // Needed in order to be able to read mls_group from storage upon
     // deserialization from files.
     group_id: Vec<u8>,
-    only_contact: Option<Contact>,
+    contacts: Vec<Contact>,
+    is_admin: bool,
 }
 
 impl Group {
@@ -89,7 +93,8 @@ impl Group {
         if let Some(mls_group) = mls_group_option {
             Ok(Group {
                 group_name: group_helper.group_name,
-                only_contact: group_helper.only_contact,
+                contacts: group_helper.contacts,
+                is_admin: group_helper.is_admin,
                 mls_group,
             })
         } else {
@@ -98,37 +103,27 @@ impl Group {
     }
 }
 
+#[derive(PartialEq)]
+pub enum ClientType {
+    Camera,
+    App,
+}
+
 pub struct MlsClient {
     pub(crate) group: Option<Group>,
     pub(crate) identity: Identity,
     provider: OpenMlsRustPersistentCrypto,
     file_dir: String,
     tag: String,
+    client_type: ClientType,
 }
 
 impl MlsClient {
-    fn sanitize_checkpoint_label(label: &str) -> String {
-        label.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
-    }
-
-    fn checkpoint_paths(&self, label: &str) -> (String, String) {
-        let safe_label = Self::sanitize_checkpoint_label(label);
-        let group_path = format!(
-            "{}/{}{}_{}",
-            self.file_dir, CHECKPOINT_GROUP_PREFIX, self.tag, safe_label
-        );
-        let key_path = format!(
-            "{}/{}{}_{}",
-            self.file_dir, CHECKPOINT_KEY_PREFIX, self.tag, safe_label
-        );
-        (group_path, key_path)
-    }
-
     fn load_group_from_file(
-        path: &str,
+        path: &PathBuf,
         provider: &OpenMlsRustPersistentCrypto,
     ) -> io::Result<Option<Group>> {
-        let file = fs::File::open(path)?;
+        let file = File::open(path)?;
         let mut reader = BufReader::with_capacity(file.metadata()?.len().try_into().unwrap(), file);
         let data = reader.fill_buf()?;
         let group_helper_option: Option<GroupHelper> = bincode::deserialize(data)
@@ -148,33 +143,20 @@ impl MlsClient {
         first_time: bool,
         file_dir: String,
         tag: String,
+        client_type: ClientType,
     ) -> io::Result<Self> {
         let mut crypto = OpenMlsRustPersistentCrypto::default();
-        if !first_time {
-            let ks_files = Self::get_state_files_sorted(
-                &file_dir,
-                &("key_store_".to_string() + &tag.clone() + "_"),
-            )
-            .unwrap();
-            let mut load_successful = false;
-            for f in &ks_files {
-                let ks_pathname = file_dir.clone() + "/" + f;
-                let file = fs::File::open(ks_pathname).expect("Could not open file");
-                let result = crypto.load_keystore(&file);
-                if result.is_ok() {
-                    load_successful = true;
-                    break;
-                }
+        let group = if first_time {
+            let file_dir_path = Path::new(&file_dir);        
+            let state_dir_path = file_dir_path.join(&tag);
+            if !state_dir_path.exists() {
+                fs::create_dir(&state_dir_path)?;
+                Self::fsync_dir(&file_dir_path)?;
             }
 
-            if !load_successful {
-                panic!("Could not successfully load the key store from file.");
-            }
-        }
-        let group = if first_time {
             None
         } else {
-            Self::restore_group_state(file_dir.clone(), tag.clone(), &crypto)?
+            Self::restore_group_state(file_dir.clone(), tag.clone(), &mut crypto)?
         };
 
         let out = Self {
@@ -190,6 +172,7 @@ impl MlsClient {
             provider: crypto,
             file_dir,
             tag,
+            client_type,
         };
 
         Ok(out)
@@ -199,22 +182,12 @@ impl MlsClient {
         self.identity
             .delete_signature_key(self.file_dir.clone(), self.tag.clone());
 
-        let g_files = Self::get_state_files_sorted(
-            &self.file_dir,
-            &("group_state_".to_string() + &self.tag.clone() + "_"),
-        )
-        .unwrap();
-        for f in &g_files[..] {
-            let _ = fs::remove_file(self.file_dir.clone() + "/" + f);
-        }
-
-        let ks_files = Self::get_state_files_sorted(
-            &self.file_dir,
-            &("key_store_".to_string() + &self.tag.clone() + "_"),
-        )
-        .unwrap();
-        for f in &ks_files[..] {
-            let _ = fs::remove_file(self.file_dir.clone() + "/" + f);
+        let file_dir_path = Path::new(&self.file_dir);
+        
+        let state_dir_path = file_dir_path.join(&self.tag);
+        if !state_dir_path.exists() {
+            fs::remove_dir_all(&state_dir_path)?;
+            Self::fsync_dir(&file_dir_path)?;
         }
 
         Ok(())
@@ -225,21 +198,20 @@ impl MlsClient {
     }
 
     /// Get the key packages fo this user.
-    pub fn key_packages(&self) -> Vec<(Vec<u8>, KeyPackage)> {
-        // clone first !
-        let kpgs = self.identity.kp.clone();
-        Vec::from_iter(kpgs)
-    }
+    pub fn key_package(&mut self) -> KeyPackage {
+        let kp = self.identity.kp.clone();
+        // Update the key_package after it's been used once.
+        self.identity.update_key_package(CIPHERSUITE, &self.provider);
 
-    /// Get a list of clients in the group to send messages to.
-    /// This is currently very simple: return the only_contact
-    fn recipients(group: &Group) -> Vec<Vec<u8>> {
-        let recipients = vec![group.only_contact.as_ref().unwrap().id.clone()];
-        recipients
+        kp
     }
 
     /// Create a group with the given name.
     pub fn create_group(&mut self, name: &str) -> io::Result<()> {
+        if self.client_type != ClientType::Camera {
+            return Err(io::Error::other("Only the camera can create a group."));
+        }
+
         if self.group.is_some() {
             return Err(io::Error::other("Group previously created."));
         }
@@ -266,7 +238,8 @@ impl MlsClient {
         let group = Group {
             group_name: name.to_string(),
             mls_group,
-            only_contact: None,
+            contacts: vec![],
+            is_admin: false, // irrelevant for the camera
         };
 
         self.group = Some(group);
@@ -274,67 +247,111 @@ impl MlsClient {
     }
 
     /// Invite a contact to a group.
-    pub fn invite(&mut self, contact: &Contact, secret: Vec<u8>) -> io::Result<Vec<u8>> {
+    fn invite(
+        &mut self,
+        contact: &Contact,
+        preshared_key_id: &PreSharedKeyId,
+    ) -> io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         if self.group.is_none() {
             return Err(io::Error::other("Group not created yet".to_string()));
         }
 
         let group = self.group.as_mut().unwrap();
 
-        if group.only_contact.is_some() {
-            return Err(io::Error::other(
-                "Cannot invite more than one member to the group.",
-            ));
+        // first is true if we're inviting the first app, i.e., the admin_app
+        let first = group.contacts.len() == 0;
+
+        #[cfg(not(test))] {
+            // For now, we allow one app only.
+            // We allow more apps for tests.
+            if !first {
+                return Err(io::Error::other("The camera can invite one app only (for now)."));
+            }
         }
 
-        // Create an external psk proposal and commit it.
-        // This is used for mutual authentication.
-        if secret.len() != pairing::NUM_SECRET_BYTES {
-            return Err(io::Error::other("Invalid number of bytes in secret."));
+        if !first {
+            // Set AAD for the commit message
+            let group_aad = group.group_name.clone() + " AAD";
+            group.mls_group.set_aad(group_aad.as_bytes().to_vec());
         }
 
-        let psk_id = vec![1u8, 2, 3];
-        //let secret = [0u8; 64];
-        let external_psk = ExternalPsk::new(psk_id);
-        let preshared_key_id = PreSharedKeyId::new(
-            CIPHERSUITE,
-            self.provider.rand(),
-            Psk::External(external_psk),
-        )
-        .expect("An unexpected error occured.");
-        preshared_key_id.store(&self.provider, &secret).unwrap();
-
-        let (_psk_proposal, _proposal_ref) = group
+        let (psk_proposal, _proposal_ref) = group
             .mls_group
-            .propose_external_psk(&self.provider, &self.identity.signer, preshared_key_id)
+            .propose_external_psk(&self.provider, &self.identity.signer, preshared_key_id.clone())
             .expect("Could not create PSK proposal");
 
-        // Build a proposal with this key package and do the MLS bits.
-        let joiner_key_package = contact.key_packages[0].1.clone();
+        let mut psk_proposal_vec = Vec::new();
+        psk_proposal
+            .tls_serialize(&mut psk_proposal_vec)
+            .map_err(|e| io::Error::other(format!("tls_serialize for psk_proposal failed ({e})")))?;
 
-        // Note: out_messages is needed for other group members.
-        // Currently, we don't need/use it since our groups only have
-        // two members, an inviter (camera) and an invitee (app).
-        let (_out_messages, welcome, _group_info) = group
+        if !first {
+            // Set AAD for the commit message
+            let group_aad = group.group_name.clone() + " AAD";
+            group.mls_group.set_aad(group_aad.as_bytes().to_vec());
+        }
+
+        // Build a proposal with this key package and do the MLS bits.
+        let joiner_key_package = contact.key_package.clone();
+
+        // Note: commit is needed for other group members.
+        let (commit, welcome, _group_info) = group
             .mls_group
             .add_members(&self.provider, &self.identity.signer, &[joiner_key_package])
             .map_err(|e| io::Error::other(format!("Failed to add member to group - {e}")))?;
 
-        // First, process the invitation on our end.
+        // First, generate and return the message to others.
+        // This should be done before we merge the invitation commit.
+        let commit_msg_vec = if first {
+            vec![]
+        } else {
+            let mut msg_vec = Vec::new();
+            commit
+                .tls_serialize(&mut msg_vec)
+                .map_err(|e| io::Error::other(format!("tls_serialize for out_messages failed ({e})")))?;
+
+            msg_vec
+        };
+
+        // Second, process the invitation on our end.
         group
             .mls_group
             .merge_pending_commit(&self.provider)
             .expect("error merging pending commit");
 
-        // Second, generate and return the Welcome message (to be sent to the joiner).
+        // Third, generate and return the Welcome message (to be sent to the joiner).
         let mut welcome_msg_vec = Vec::new();
         welcome
             .tls_serialize(&mut welcome_msg_vec)
-            .map_err(|e| io::Error::other(format!("tls_serialize for welcome_msg failed ({e})")))?;
+            .map_err(|e| io::Error::other(format!("tls_serialize for welcome failed ({e})")))?;
 
-        group.only_contact = Some(contact.clone());
+        let mut contact_clone = contact.clone();
 
-        Ok(welcome_msg_vec)
+        if first {
+            contact_clone.admin_contact = true;
+        }
+        
+        group.contacts.push(contact_clone);
+
+        Ok((welcome_msg_vec, psk_proposal_vec, commit_msg_vec))
+    }
+
+    pub fn invite_with_secret(
+        &mut self,
+        contact: &Contact,
+        secret: Vec<u8>,
+    ) -> io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        if self.client_type != ClientType::Camera {
+            return Err(io::Error::other("Only the camera can invite a member to the group."));
+        }
+
+        let preshared_key_id = self.apply_secret(secret)?;
+
+        let result = self.invite(contact, &preshared_key_id);
+
+        self.delete_secret(&preshared_key_id);
+
+        result
     }
 
     /// Join a group with the provided welcome message.
@@ -342,30 +359,13 @@ impl MlsClient {
         &mut self,
         welcome: Welcome,
         expected_inviter: Contact,
-        secret: Vec<u8>,
-        group_name: String,
+        group_name: &str,
     ) -> io::Result<()> {
         if self.group.is_some() {
             return Err(io::Error::other("Joined a group already."));
         }
 
         log::debug!("Joining group");
-
-        // Store the secret as an external psk.
-        // This is used for mutual authentication.
-        if secret.len() != pairing::NUM_SECRET_BYTES {
-            return Err(io::Error::other("Invalid number of bytes in secret."));
-        }
-
-        let psk_id = vec![1u8, 2, 3];
-        let external_psk = ExternalPsk::new(psk_id);
-        let preshared_key_id = PreSharedKeyId::new(
-            CIPHERSUITE,
-            self.provider.rand(),
-            Psk::External(external_psk),
-        )
-        .expect("An unexpected error occured.");
-        preshared_key_id.store(&self.provider, &secret).unwrap();
 
         // NOTE: Since the DS doesn't distribute copies of the group's ratchet
         // tree, we need to include the ratchet_tree_extension.
@@ -374,17 +374,11 @@ impl MlsClient {
             .build();
         let mls_group =
             StagedWelcome::new_from_welcome(&self.provider, &group_config, welcome, None)
-                .expect("Failed to create staged join")
+                .map_err(|e| io::Error::other(format!("Failed to create staged join - {e}")))?
                 .into_group(&self.provider)
-                .expect("Failed to create MlsGroup");
+                .map_err(|e| io::Error::other(format!("Failed to create MlsGroup - {e}")))?;
 
-        // Currently, we only support groups that have one camera and one app.
-        if mls_group.members().count() != 2 {
-            return Err(io::Error::other(format!(
-                "Unexpected group size in the invitation {:?}",
-                mls_group.members().count()
-            )));
-        }
+        let is_admin = mls_group.members().count() == 2;
 
         // Check to ensure the welcome message is from the contact we expect.
         // Also check the other group member (which should be us).
@@ -410,9 +404,10 @@ impl MlsClient {
         }
 
         let group = Group {
-            group_name: group_name.clone(),
+            group_name: group_name.to_string(),
             mls_group,
-            only_contact: Some(expected_inviter),
+            contacts: vec![expected_inviter],
+            is_admin,
         };
 
         log::trace!("   {}", group_name);
@@ -421,13 +416,42 @@ impl MlsClient {
         Ok(())
     }
 
+    fn apply_secret(
+        &mut self,
+        secret: Vec<u8>,
+    ) -> io::Result<PreSharedKeyId> {
+        // Store the secret as an external psk.
+        // This is used for mutual authentication.
+        if secret.len() != pairing::NUM_SECRET_BYTES {
+            return Err(io::Error::other("Invalid number of bytes in secret."));
+        }
+
+        let psk_id = vec![1u8, 2, 3];
+        let external_psk = ExternalPsk::new(psk_id);
+        let preshared_key_id = PreSharedKeyId::new(
+            CIPHERSUITE,
+            self.provider.rand(),
+            Psk::External(external_psk),
+        )
+        .expect("An unexpected error occured.");
+        preshared_key_id.store(&self.provider, &secret).unwrap();
+
+        Ok(preshared_key_id)
+    }
+
+    fn delete_secret(
+        &mut self,
+        preshared_key_id: &PreSharedKeyId,
+    ) {
+        let _ = self.provider.storage().delete_psk(preshared_key_id.psk());
+    }
+
     /// Process a welcome message
-    pub fn process_welcome(
+    fn process_welcome(
         &mut self,
         expected_inviter: Contact,
         welcome_msg_vec: Vec<u8>,
-        secret: Vec<u8>,
-        group_name: String,
+        group_name: &str,
     ) -> io::Result<()> {
         let welcome_msg = match MlsMessageIn::tls_deserialize(&mut welcome_msg_vec.as_slice()) {
             Ok(msg) => msg,
@@ -436,208 +460,206 @@ impl MlsClient {
 
         match welcome_msg.extract() {
             MlsMessageBodyIn::Welcome(welcome) => {
-                self.join_group(welcome, expected_inviter, secret, group_name)
-                    .unwrap();
-            }
-            _ => panic!("Unsupported message type in process_welcome"),
+                self.join_group(welcome, expected_inviter, group_name)?;
+            },
+            _ => return Err(io::Error::other("Unsupported message type in process_welcome")),
         }
 
         Ok(())
     }
 
-    /// Saves the groups and key store in persistent storage.
-    /// Earlier versions of this function would simply reuse the same file names.
-    /// However, we would every once in a while end up with a corrupted file (mainly key store):
-    /// The old file was gone and the new one was not fully written.
-    /// To mitigate that, we write the state in a file with a new file name,
-    /// which has the current timestamp, appended to it.
-    /// Only when that file is written and persisted, we delete the old ones.
-    /// When using these files at initialization time, we use the one with the
-    /// largest timestamp (we could end up with multiple files at initialization
-    /// time if this function is not fully executed).
-    pub fn save_group_state(&mut self) {
-        // Use nanos in order to ensure that each time this function is called, we will use a new file name.
-        // This does make some assumptions about the execution speed, but those assumptions are reasonable (for now).
-        let current_timestamp = Self::next_state_timestamp(&self.file_dir, &self.tag);
-
-        let group_helper_option = self.group.as_ref().map(|group| GroupHelper {
-            group_name: group.group_name.clone(),
-            group_id: group.mls_group.group_id().to_vec(),
-            only_contact: group.only_contact.clone(),
-        });
-
-        let data = bincode::serialize(&group_helper_option).unwrap();
-        let pathname = self.file_dir.clone()
-            + "/group_state_"
-            + &self.tag.clone()
-            + "_"
-            + &current_timestamp.to_string();
-        let mut file = fs::File::create(pathname.clone()).expect("Could not create file");
-        file.write_all(&data).unwrap();
-        file.flush().unwrap();
-        file.sync_all().unwrap();
-
-        let ks_pathname = self.file_dir.clone()
-            + "/key_store_"
-            + &self.tag.clone()
-            + "_"
-            + &current_timestamp.to_string();
-        let mut ks_file = fs::File::create(ks_pathname.clone()).expect("Could not create file");
-        self.provider.save_keystore(&ks_file).unwrap();
-        ks_file.flush().unwrap();
-        ks_file.sync_all().unwrap();
-
-        //delete old groups state files
-        let g_files = Self::get_state_files_sorted(
-            &self.file_dir,
-            &("group_state_".to_string() + &self.tag.clone() + "_"),
-        )
-        .unwrap();
-        assert!(
-            g_files[0]
-                == "group_state_".to_owned()
-                    + &self.tag.clone()
-                    + "_"
-                    + &current_timestamp.to_string()
-        );
-        for f in &g_files[1..] {
-            let _ = fs::remove_file(self.file_dir.clone() + "/" + f);
+    pub fn process_welcome_with_secret(
+        &mut self,
+        expected_inviter: Contact,
+        welcome_msg_vec: Vec<u8>,
+        secret: Vec<u8>,
+        group_name: &str,
+    ) -> io::Result<()> {
+        if self.client_type != ClientType::App {
+            return Err(io::Error::other("Only an app can process a welcome message and join a group."));
         }
 
-        let ks_files = Self::get_state_files_sorted(
-            &self.file_dir,
-            &("key_store_".to_string() + &self.tag.clone() + "_"),
-        )
-        .unwrap();
-        assert!(
-            ks_files[0]
-                == "key_store_".to_owned()
-                    + &self.tag.clone()
-                    + "_"
-                    + &current_timestamp.to_string()
-        );
-        for f in &ks_files[1..] {
-            let _ = fs::remove_file(self.file_dir.clone() + "/" + f);
-        }
+        let preshared_key_id = self.apply_secret(secret)?;
+
+        let result = self.process_welcome(expected_inviter, welcome_msg_vec, group_name);
+
+        self.delete_secret(&preshared_key_id);
+
+        result
     }
 
-    // Create a crash-recovery snapshot of MLS state before decrypting a file.
-    // This is intentionally separate from save_group_state so we do not delete
-    // or overwrite the normal rotation files.
-    pub fn save_checkpoint(&mut self, label: &str) -> io::Result<()> {
-        let (group_path, key_path) = self.checkpoint_paths(label);
+    /// Write bytes to a file, truncating if it exists, and fsync the file.
+    fn write_and_fsync(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        Ok(())
+    }
+
+    /// fsync a directory. This helps make renames durable across crashes.
+    fn fsync_dir(dir: &Path) -> io::Result<()> {
+        let d = File::open(dir)?;
+        d.sync_all()?;
+        Ok(())
+    }
+
+    /// Read the CURRENT pointer (e.g. "version000000123\n") and return the trimmed version string.
+    fn read_current(file_dir: &Path) -> io::Result<String> {
+        let mut s = String::new();
+        File::open(file_dir.join(CURRENT_FILE))?.read_to_string(&mut s)?;
+        Ok(s.trim().to_string())
+    }
+
+    /// Atomically write the CURRENT pointer via temp file + rename.
+    fn write_current_atomic(file_dir: &Path, version: &str) -> io::Result<()> {
+        let tmp = file_dir.join(format!(".{}.tmp", CURRENT_FILE));
+        let dst = file_dir.join(CURRENT_FILE);
+
+        Self::write_and_fsync(&tmp, format!("{version}\n").as_bytes())?;
+
+        // Atomic replace of CURRENT
+        fs::rename(&tmp, &dst)?;
+
+        Self::fsync_dir(file_dir)?;
+        Ok(())
+    }
+
+    /// Returns next monotonically increasing version string like "v000000001".
+    fn next_version(file_dir: &Path) -> io::Result<String> {
+        // If CURRENT doesn't exist yet, start at 1.
+        let cur = match Self::read_current(file_dir) {
+            Ok(v) => v,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => "v000000000".to_string(),
+            Err(e) => return Err(e),
+        };
+
+        let n: u64 = cur
+            .strip_prefix('v')
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+
+        Ok(format!("v{:09}", n + 1))
+    }
+
+    /// Saves the groups and key store in persistent storage, atomically.
+    /// Layout:
+    ///   self.file_dir/self.tag/v<version>/group_state
+    ///   self.file_dir/self.tag/v<version>/key_store
+    ///   self.file_dir/self.tag/CURRENT  (contains "v<version>")
+    ///
+    /// Atomicity guarantee:
+    /// - The new version becomes visible only when CURRENT is switched.
+    /// - If crash occurs before CURRENT rename, restore sees the old version.
+    /// - If CURRENT is switched, both files are already written+fsynced in that version directory.
+    pub fn save_group_state(
+        &mut self
+    ) -> io::Result<()> {
+        let file_dir_path = Path::new(&self.file_dir); 
+        let state_dir_path = file_dir_path.join(&self.tag);
+        let version = Self::next_version(&state_dir_path)?;
+        let new_dir = state_dir_path.join(&version);
+
+        fs::create_dir(&new_dir)?;
+        Self::fsync_dir(&state_dir_path)?;
+
+        let g_path = new_dir.join(GROUP_STATE_FILENAME);
+        let ks_path = new_dir.join(KEY_STORE_FILENAME);
 
         let group_helper_option = self.group.as_ref().map(|group| GroupHelper {
             group_name: group.group_name.clone(),
             group_id: group.mls_group.group_id().to_vec(),
-            only_contact: group.only_contact.clone(),
+            contacts: group.contacts.clone(),
+            is_admin: group.is_admin,
         });
 
         let data = bincode::serialize(&group_helper_option)
-            .map_err(|e| io::Error::other(format!("Failed to serialize group state - {e}")))?;
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut g_file = File::create(g_path)?;
+        g_file.write_all(&data)?;
+        g_file.flush()?;
+        g_file.sync_all()?;
 
-        let mut file = fs::File::create(&group_path)?;
-        file.write_all(&data)?;
-        file.flush()?;
-        file.sync_all()?;
+        #[cfg(test)]
+        {
+            if std::env::var("SAVE_GROUP_STATE_CRASH").is_ok() {
+                return Ok(());
+            }
+        }
 
-        let mut ks_file = fs::File::create(&key_path)?;
-        self.provider
-            .save_keystore(&ks_file)
-            .map_err(|e| io::Error::other(e))?;
+        let mut ks_file = File::create(ks_path)?;
+        self.provider.save_keystore(&ks_file)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         ks_file.flush()?;
         ks_file.sync_all()?;
 
+        Self::fsync_dir(&new_dir)?;
+
+        Self::write_current_atomic(&state_dir_path, &version)?;
+
+        //delete old state files
+        Self::cleanup_old_versions(&state_dir_path, &version);
+
         Ok(())
     }
 
-    // Our best-effort recovery path... if both checkpoint files exist, reload the
-    // keystore first (so group load can succeed), then restore the group helper.
-    // Returns false when there is no checkpoint to restore.
-    pub fn restore_checkpoint(&mut self, label: &str) -> io::Result<bool> {
-        let (group_path, key_path) = self.checkpoint_paths(label);
-        if !Path::new(&group_path).exists() || !Path::new(&key_path).exists() {
-            return Ok(false);
-        }
-
-        let ks_file = fs::File::open(&key_path)?;
-        self.provider
-            .load_keystore(&ks_file)
-            .map_err(|e| io::Error::other(e))?;
-
-        let group = Self::load_group_from_file(&group_path, &self.provider)?;
-        self.group = group;
-
-        Ok(true)
-    }
-
-    // Checkpoints are very strictly temporary and absolutely should be removed after a
-    // successful decrypt to avoid any lingering rollback windows.
-    pub fn clear_checkpoint(&mut self, label: &str) -> io::Result<()> {
-        let (group_path, key_path) = self.checkpoint_paths(label);
-        if Path::new(&group_path).exists() {
-            fs::remove_file(&group_path)?;
-        }
-        if Path::new(&key_path).exists() {
-            fs::remove_file(&key_path)?;
-        }
-        Ok(())
-    }
-
-    pub fn restore_group_state(
+    fn restore_group_state(
         file_dir: String,
         tag: String,
-        provider: &OpenMlsRustPersistentCrypto,
+        crypto: &mut OpenMlsRustPersistentCrypto,
     ) -> io::Result<Option<Group>> {
-        let g_files =
-            Self::get_state_files_sorted(&file_dir, &("group_state_".to_string() + &tag + "_"))
-                .unwrap();
-        for f in &g_files {
-            let pathname = file_dir.clone() + "/" + f;
-            if let Ok(group) = Self::load_group_from_file(&pathname, provider) {
-                return Ok(group);
-            }
+        let file_dir_path = Path::new(&file_dir);
+        let state_dir_path = file_dir_path.join(&tag);
+        let version = Self::read_current(&state_dir_path)?;
+        let dir = state_dir_path.join(&version);
+
+        let g_path = dir.join(GROUP_STATE_FILENAME);
+        let ks_path = dir.join(KEY_STORE_FILENAME);
+
+        // restore key store
+        let ks_file = File::open(&ks_path)?;
+        crypto.load_keystore(&ks_file)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        // restore group 
+        let group = Self::load_group_from_file(&g_path, crypto)?;
+
+        Ok(group)
+    }
+
+    fn cleanup_old_versions(file_dir: &Path, current: &str) {
+        let keep: usize = 1; // Keep "keep" newest versions including current.
+        let mut versions: Vec<String> = match fs::read_dir(file_dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| name.starts_with('v'))
+                .collect(),
+            Err(_) => return,
+        };
+
+        versions.sort();
+
+        if !versions.contains(&current.to_string()) {
+            return;
         }
 
-        panic!("Could not successfully load the group state from file.");
-    }
-
-    pub fn get_state_files_sorted(dir_path: &str, pattern: &str) -> std::io::Result<Vec<String>> {
-        let mut matching_files: Vec<(String, u128)> = Vec::new();
-
-        for entry in fs::read_dir(dir_path)? {
-            let entry = entry?;
-            let file_name = entry.file_name();
-            let file_name_str = file_name.to_string_lossy();
-
-            if file_name_str.starts_with(pattern) {
-                if let Some(timestamp) = Self::extract_timestamp(&file_name_str, pattern) {
-                    matching_files.push((file_name_str.to_string(), timestamp));
-                }
+        // Keep the last `keep` entries
+        let cutoff = versions.len().saturating_sub(keep);
+        for v in &versions[..cutoff] {
+            if v == current {
+                continue;
             }
+            // FIXME: what if this fails?
+            let _ = fs::remove_dir_all(file_dir.join(v));
         }
-
-        matching_files.sort_by(|a, b| b.1.cmp(&a.1));
-        let sorted_files: Vec<String> = matching_files.into_iter().map(|(name, _)| name).collect();
-
-        Ok(sorted_files)
     }
 
-    fn extract_timestamp(file_name: &str, pattern: &str) -> Option<u128> {
-        file_name
-            .strip_prefix(pattern)?
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse::<u128>()
-            .ok()
-    }
-
-    pub fn create_contact(name: &str, key_packages: KeyPackages) -> io::Result<Contact> {
-        // FIXME: The identity of a client is defined as the identity of the first key
-        // package right now.
-        // Note: we only use one key package anyway.
-        let key_package = key_packages[0].1.clone();
+    pub fn create_contact(name: &str, key_package: KeyPackage) -> io::Result<Contact> {
         let id = key_package
             .leaf_node()
             .credential()
@@ -645,10 +667,11 @@ impl MlsClient {
             .to_vec();
         let contact = Contact {
             username: name.to_string(),
-            key_packages,
+            key_package,
             id: id.clone(),
             update_proposal: None,
             last_update_timestamp: Self::now_in_secs(),
+            admin_contact: false,
         };
 
         Ok(contact)
@@ -665,6 +688,10 @@ impl MlsClient {
     /// Generate a commit to update self leaf node in the ratchet tree, merge the commit, and return the message
     /// to be sent to other group members. It also returns the epoch number after the update.
     pub fn update(&mut self) -> io::Result<(Vec<u8>, u64)> {
+        if self.client_type != ClientType::Camera {
+            return Err(io::Error::other("Only the camera can call update(). App should use update_proposal()."));
+        }
+
         if self.group.is_none() {
             return Err(io::Error::other("Group not created yet".to_string()));
         }
@@ -675,11 +702,13 @@ impl MlsClient {
         let group_aad = group.group_name.clone() + " AAD";
         group.mls_group.set_aad(group_aad.as_bytes().to_vec());
 
-        if let Some(proposal) = group.only_contact.as_mut().unwrap().update_proposal.take() {
-            group
-                .mls_group
-                .store_pending_proposal(self.provider.storage(), proposal)
-                .map_err(|e| io::Error::other(format!("FError: could not store proposal - {e}")))?;
+        for contact in &mut group.contacts {
+            if let Some(proposal) = contact.update_proposal.take() {
+                group
+                    .mls_group
+                    .store_pending_proposal(self.provider.storage(), proposal)
+                    .map_err(|e| io::Error::other(format!("Error: could not store proposal - {e}")))?;
+            }
         }
 
         // FIXME: _welcome should be none, group_info should be some.
@@ -694,9 +723,8 @@ impl MlsClient {
             .map_err(|e| io::Error::other(format!("Failed to self update - {e}")))?;
 
         log::trace!("Generating update message");
-        let group_recipients = Self::recipients(group);
         // Generate the message to the group.
-        let msg = GroupMessage::new(commit_msg_bundle.into_commit().into(), &group_recipients);
+        let msg: MlsMessageIn = commit_msg_bundle.into_commit().into();
 
         // Merge pending commit.
         group
@@ -716,6 +744,10 @@ impl MlsClient {
     /// Generate an update proposal for the self leaf node in the ratchet tree and return the proposal message
     /// to be sent to other group members.
     pub fn update_proposal(&mut self) -> io::Result<Vec<u8>> {
+        if self.client_type != ClientType::App {
+            return Err(io::Error::other("Only an app can call update_proposal(). Camera should use update()."));
+        }
+
         if self.group.is_none() {
             return Err(io::Error::other("Group not created yet".to_string()));
         }
@@ -760,19 +792,23 @@ impl MlsClient {
         Ok(epoch)
     }
 
+    /* Not used for now. */
     /// Returns how long the only contact has been offline
     /// It is recommended that this is checked before encrypting a message
     /// for groups used to send important data.
     /// If the only contact has been offline for more than a threshold,
     /// no new messages should be encrypted/sent.
     pub fn offline_period(&self) -> u64 {
+        /*
         let now = Self::now_in_secs();
-        let only_contact = self.group.as_ref().unwrap().only_contact.as_ref().unwrap();
-        if now < only_contact.last_update_timestamp {
+        let first_contact = self.group.as_ref().unwrap().first_contact.as_ref().unwrap();
+        if now < first_contact.last_update_timestamp {
             return 0;
         }
 
-        now - only_contact.last_update_timestamp
+        now - first_contact.last_update_timestamp
+        */
+        0
     }
 
     /// Encrypts a message and returns the ciphertext
@@ -792,13 +828,28 @@ impl MlsClient {
             .create_message(&self.provider, &self.identity.signer, bytes)
             .map_err(|e| io::Error::other(format!("{e}")))?;
 
-        let msg = GroupMessage::new(message_out.into(), &Self::recipients(group));
+        let msg: MlsMessageIn = message_out.into();
 
         let mut msg_vec = Vec::new();
         msg.tls_serialize(&mut msg_vec)
             .map_err(|e| io::Error::other(format!("tls_serialize for msg failed ({e})")))?;
 
         Ok(msg_vec)
+    }
+
+    fn find_matching_contact<'a>(
+        processed_message: &ProcessedMessage,
+        contacts: &'a mut Vec<Contact>
+    ) -> Option<&'a mut Contact> {
+        let sender = processed_message.credential().clone();
+        
+        for contact in contacts {
+            if sender == contact.get_credential() {
+                return Some(contact);
+            }
+        }
+
+        None
     }
 
     fn process_protocol_message(
@@ -827,10 +878,6 @@ impl MlsClient {
             )));
         }
 
-        // This works since none of the other members of the group, other than the camera,
-        // will be in our contact list (hence "only_matching_contact").
-        let only_contact = group.only_contact.as_ref().unwrap();
-
         let processed_message = match mls_group.process_message(&self.provider, message) {
             Ok(msg) => msg,
             Err(e) => {
@@ -851,14 +898,20 @@ impl MlsClient {
             ));
         }
 
-        // Accepts messages from the only_contact in the group.
+        // Only accepts messages from one of our contacts.
         // Note: in a ProcessedMessage, the credential of the message sender is already inspected.
         // See: openmls/src/framing/validation.rs
-        let sender = processed_message.credential().clone();
-        if sender != only_contact.get_credential() {
-            return Err(io::Error::other(
-                "Error: received a message from an unknown party".to_string(),
-            ));
+        // However, this is an additional check.
+        // For example, it doesn't allow one app to send a message to another app,
+        // which would otherwise be allowed.
+        // In the camera, this also helps us determine if the message is coming from the admin_contact
+        // or not.
+
+        // It cannot be None if we're the camera. But it could be None if we're
+        // the app since not all apps are in each others' contact list.
+        let sender_contact: Option<&mut Contact> = Self::find_matching_contact(&processed_message, &mut group.contacts);
+        if self.client_type == ClientType::Camera && sender_contact.is_none() {
+            return Err(io::Error::other("Camera received a message from an unknown contact."));
         }
 
         match processed_message.into_content() {
@@ -872,26 +925,53 @@ impl MlsClient {
 
                 Ok(application_message)
             }
-            ProcessedMessageContent::ProposalMessage(proposal) => {
+            ProcessedMessageContent::ProposalMessage(queued_proposal) => {
                 if app_msg {
                     return Err(io::Error::other(
                         "Error: expected an application message, but received a proposal message.",
                     ));
                 }
 
-                let only_contact = group.only_contact.as_mut().unwrap();
+                if let Proposal::Update(_update_proposal) = queued_proposal.proposal() {
+                    match self.client_type {
+                        ClientType::Camera => {
+                            // We've checked above and sender_contact is not None.
+                            let sender = sender_contact.unwrap();
+                            if sender.update_proposal.is_none() {
+                                sender.update_proposal = Some(*queued_proposal);
+                            }
 
-                if only_contact.update_proposal.is_none() {
-                    only_contact.update_proposal = Some(*proposal);
+                            sender.last_update_timestamp = Self::now_in_secs();
+                        },
+
+                        ClientType::App => {
+                            group
+                                .mls_group
+                                .store_pending_proposal(self.provider.storage(), *queued_proposal)
+                                .map_err(|e| io::Error::other(format!("Error: could not store proposal - {e}")))?;
+                        },
+                    }
+
+                    return Ok(vec![]);
+                } else if let Proposal::PreSharedKey(_psk_proposal) = queued_proposal.proposal() {
+                    if self.client_type != ClientType::App {
+                        return Err(io::Error::other("Only an app should receive a psk proposal."));
+                    }
+
+                    mls_group
+                        .store_pending_proposal(self.provider.storage(), *queued_proposal)
+                        .unwrap();
+
+                    return Ok(vec![]);
+                } else {
+                    return Err(
+                        io::Error::other("Error: Unexpected proposal type!".to_string()));
                 }
-
-                only_contact.last_update_timestamp = Self::now_in_secs();
-
-                Ok(vec![])
             }
-            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal) => Err(
-                io::Error::other("Error: Unexpected external join proposal message!".to_string()),
-            ),
+            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal) => {
+                return Err(
+                    io::Error::other("Error: Unexpected external join proposal message!".to_string()));
+            },
             ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                 if app_msg {
                     return Err(io::Error::other(
@@ -899,14 +979,28 @@ impl MlsClient {
                     ));
                 }
 
-                // Restrict the type of staged commits that we'll merge: only one update/queued proposal!
-                if staged_commit.add_proposals().next().is_some()
+                if self.client_type != ClientType::App {
+                    return Err(io::Error::other("Only an app should receive a staged commit message."));
+                }
+
+                if sender_contact.is_none() {
+                    return Err(io::Error::other("Received a commit message from a member in the group other than the camera."));
+                }
+
+                let num_apps_in_group = mls_group.members().count() - 1;
+
+                // Restrict the type of staged commits that we'll merge.
+                // This is effectively a filter for the staged commit.
+                // It's determined empirically and is best-effort.
+                if !(staged_commit.add_proposals().next().is_none()
+                    || staged_commit.add_proposals().collect::<Vec<_>>().len() == 1)
                     || staged_commit.remove_proposals().next().is_some()
                     || !(staged_commit.update_proposals().next().is_none()
-                        || staged_commit.update_proposals().collect::<Vec<_>>().len() == 1)
-                    || staged_commit.psk_proposals().next().is_some()
+                        || staged_commit.update_proposals().collect::<Vec<_>>().len() <= num_apps_in_group)
+                    || !(staged_commit.psk_proposals().next().is_none()
+                        || staged_commit.psk_proposals().collect::<Vec<_>>().len() == 1)
                     || !(staged_commit.queued_proposals().next().is_none()
-                        || staged_commit.queued_proposals().collect::<Vec<_>>().len() == 1)
+                        || staged_commit.queued_proposals().collect::<Vec<_>>().len() <= cmp::max(2, num_apps_in_group))
                 {
                     return Err(io::Error::other(
                         "Error: staged commit message must contain at most one update/queued proposal and no other proposals.",
@@ -917,11 +1011,12 @@ impl MlsClient {
                     .merge_staged_commit(&self.provider, *staged_commit)
                     .expect("error merging staged commit");
 
+                // We've checked above and sender_contact is not None.
                 // TODO: we can only do this here since we know there's only one path for
-                // us to receive a staged commit and in that the only_contact has performed
+                // us to receive a staged commit and in that the sender_contact has performed
                 // a self update. However, ideally, we should check the staged commit itself
                 // to see which other leaf nodes/contacts have been updated.
-                group.only_contact.as_mut().unwrap().last_update_timestamp = Self::now_in_secs();
+                sender_contact.unwrap().last_update_timestamp = Self::now_in_secs();
 
                 Ok(vec![])
             }
@@ -933,7 +1028,11 @@ impl MlsClient {
     /// application message (app_msg = true) or a commit message (app_msg = false).
     /// This function will return an error if the message type is different from
     /// what was provided as input.
-    pub fn decrypt(&mut self, msg: Vec<u8>, app_msg: bool) -> io::Result<Vec<u8>> {
+    pub fn decrypt(
+        &mut self,
+        msg: Vec<u8>,
+        app_msg: bool,
+    ) -> io::Result<Vec<u8>> {
         let mls_msg = match MlsMessageIn::tls_deserialize(&mut msg.as_slice()) {
             Ok(m) => m,
             Err(e) => {
@@ -957,6 +1056,21 @@ impl MlsClient {
         }
     }
 
+    pub fn decrypt_with_secret(
+        &mut self,
+        msg: Vec<u8>,
+        app_msg: bool,
+        secret: Vec<u8>,
+    ) -> io::Result<Vec<u8>> {
+        let preshared_key_id = self.apply_secret(secret)?;
+
+        let result = self.decrypt(msg, app_msg);
+
+        self.delete_secret(&preshared_key_id);
+
+        result
+    }
+
     fn now_in_secs() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -964,36 +1078,13 @@ impl MlsClient {
             .as_secs()
     }
 
-    fn now_in_nano_secs() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
+    #[cfg(test)]
+    pub fn get_ratchet_tree(&self) -> RatchetTree {
+        self.group.as_ref().unwrap().mls_group.export_ratchet_tree()
     }
 
-    fn latest_state_timestamp(dir_path: &str, pattern: &str) -> Option<u128> {
-        let files = Self::get_state_files_sorted(dir_path, pattern).ok()?;
-        let first = files.first()?;
-        Self::extract_timestamp(first, pattern)
-    }
-
-    fn next_state_timestamp(dir_path: &str, tag: &str) -> u128 {
-        let now = Self::now_in_nano_secs();
-        let group_pattern = format!("group_state_{}_", tag);
-        let key_pattern = format!("key_store_{}_", tag);
-        let latest_group = Self::latest_state_timestamp(dir_path, &group_pattern);
-        let latest_key = Self::latest_state_timestamp(dir_path, &key_pattern);
-        let latest = match (latest_group, latest_key) {
-            (Some(a), Some(b)) => a.max(b),
-            (Some(a), None) => a,
-            (None, Some(b)) => b,
-            (None, None) => 0,
-        };
-
-        if latest >= now {
-            latest + 1
-        } else {
-            now
-        }
+    #[cfg(test)]
+    pub fn get_own_leaf_node(&self) -> LeafNode {
+        self.group.as_ref().unwrap().mls_group.own_leaf_node().unwrap().clone()
     }
 }

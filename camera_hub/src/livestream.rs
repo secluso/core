@@ -75,7 +75,7 @@ pub fn livestream(
 
     // Update MLS epoch
     let (commit_msg, _epoch) = mls_client.update()?;
-    mls_client.save_group_state();
+    mls_client.save_group_state().unwrap();
     let group_name = mls_client.get_group_name().unwrap();
 
     // Why bother with enqueueing the updates in the delivery monitor?
@@ -147,7 +147,7 @@ pub fn livestream(
         }
     }
 
-    mls_client.save_group_state();
+    mls_client.save_group_state().unwrap();
 
     Ok(())
 }

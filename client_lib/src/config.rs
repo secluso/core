@@ -39,7 +39,7 @@ impl HeartbeatRequest {
                 || MLS_CLIENT_TAGS[i] == "thumbnail"
             {
                 let update_proposal = mls_clients[i].update_proposal()?;
-                mls_clients[i].save_group_state();
+                mls_clients[i].save_group_state().unwrap();
                 update_proposals.push(update_proposal);
             }
         }
@@ -61,7 +61,7 @@ impl HeartbeatRequest {
             {
                 let _ =
                     mls_clients[i].decrypt(self.update_proposals[proposals_i].clone(), false)?;
-                mls_clients[i].save_group_state();
+                mls_clients[i].save_group_state().unwrap();
                 proposals_i += 1;
             }
         }
@@ -91,7 +91,7 @@ impl Heartbeat {
         for i in 0..NUM_MLS_CLIENTS {
             if MLS_CLIENT_TAGS[i] != "config" {
                 let ciphertext = mls_clients[i].encrypt(&timestamp_bytes)?;
-                mls_clients[i].save_group_state();
+                mls_clients[i].save_group_state().unwrap();
                 ciphertexts.push(ciphertext);
             }
 
@@ -154,7 +154,7 @@ impl Heartbeat {
                             return Ok(HeartbeatResult::InvalidCiphertext);
                         }
                     };
-                mls_clients[i].save_group_state();
+                mls_clients[i].save_group_state().unwrap();
 
                 info!("Checking plaintext for {}", MLS_CLIENT_TAGS[i]);
                 let timestamp_bytes: [u8; 8] = match plaintext.try_into() {
