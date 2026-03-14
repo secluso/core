@@ -564,8 +564,10 @@ impl MlsClient {
         let version = Self::next_version(&state_dir_path)?;
         let new_dir = state_dir_path.join(&version);
 
-        fs::create_dir(&new_dir)?;
-        Self::fsync_dir(&state_dir_path)?;
+        if !new_dir.exists() {
+            fs::create_dir(&new_dir)?;
+            Self::fsync_dir(&state_dir_path)?;
+        }
 
         let g_path = new_dir.join(GROUP_STATE_FILENAME);
         let ks_path = new_dir.join(KEY_STORE_FILENAME);

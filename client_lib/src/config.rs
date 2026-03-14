@@ -3,7 +3,7 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::mls_clients::{MlsClients, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL};
-use log::{error, info};
+use log::{error, info, debug};
 use serde::{Deserialize, Serialize};
 use std::io;
 
@@ -139,6 +139,9 @@ impl Heartbeat {
                             return Ok(HeartbeatResult::InvalidCiphertext);
                         }
                     };
+
+                    debug!("{:?}: current epoch = {:?}, heartbeat epoch = {:?}",
+                        MLS_CLIENT_TAGS[i], epoch, self.epochs[epoch_i]);
 
                     if epoch != self.epochs[epoch_i] {
                         return Ok(HeartbeatResult::InvalidEpoch);
