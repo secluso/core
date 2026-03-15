@@ -4,7 +4,7 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
   import { browser } from "$app/environment";
-  import { buildImage, checkRequirements, openExternalUrl, type RequirementStatus } from "$lib/api";
+  import { buildImage, checkDocker, checkRequirements, openExternalUrl, type RequirementStatus } from "$lib/api";
 
   // variants data model
   type VariantKey = "official" | "diy";
@@ -182,6 +182,12 @@
     building = true;
 
     try {
+      const dockerStatus = await checkDocker();
+      if (!dockerStatus.ok) {
+        errorMsg = dockerStatus.message ?? "Docker is installed, but the Docker daemon is not reachable. Start Docker and try again.";
+        return;
+      }
+
       const sshEnabled = effectiveSshEnabled();
       const outputWithSuffix = normalizeSshSuffix(imageOutputPath, sshEnabled);
       if (outputWithSuffix !== imageOutputPath) {

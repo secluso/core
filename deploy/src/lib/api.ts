@@ -49,6 +49,12 @@ export interface RequirementStatus {
   hint: string;
 }
 
+export interface DockerStatus {
+  ok: boolean;
+  version?: string;
+  message?: string;
+}
+
 export interface ImageBuildRequest {
   variant?: "official" | "diy";
   qrOutputPath: string;
@@ -73,6 +79,10 @@ export async function provisionServer(
 
 export async function buildImage(req: ImageBuildRequest): Promise<JobStart> {
   return invoke("build_image", { req });
+}
+
+export async function checkDocker(): Promise<DockerStatus> {
+  return invoke("check_docker");
 }
 
 export async function checkRequirements(): Promise<RequirementStatus[]> {

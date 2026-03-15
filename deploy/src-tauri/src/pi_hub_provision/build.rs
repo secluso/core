@@ -1,6 +1,6 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pi_hub_provision::credentials::generate_secluso_credentials;
-use crate::pi_hub_provision::docker::{docker_version, run_with_output, write_docker_context};
+use crate::pi_hub_provision::docker::{docker_ready, err_to_string, run_with_output, write_docker_context};
 use crate::pi_hub_provision::events::{log_line, step_error, step_ok, step_start};
 use crate::pi_hub_provision::model::{Apt, Config, RuntimeConfig, Secluso, SigKey, Ssh, User};
 use crate::pi_hub_provision::temp::shared_temp_dir;
@@ -91,7 +91,14 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
 
   // check docker early so we fail fast before doing work
   step_start(app, run_id, "docker_check", "Checking Docker");
-  let docker_ver = docker_version().context("docker --version failed")?;
+  let docker_ver = match docker_ready() {
+    Ok(version) => version,
+    Err(e) => {
+      let msg = err_to_string(e);
+      step_error(app, run_id, "docker_check", &msg);
+      return Err(anyhow!(msg));
+    }
+  };
   log_line(app, run_id, "info", Some("docker_check"), docker_ver);
   step_ok(app, run_id, "docker_check");
 
@@ -168,7 +175,13 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
   build_cmd
     .args(["--platform", DEFAULT_PLATFORM, "-t", DEFAULT_DOCKER_TAG])
     .arg(ctx.path());
-  run_with_output(app, run_id, "docker_build", &mut build_cmd).context("docker build failed")?;
+  run_with_output(app, run_id, "docker_build", &mut build_cmd)
+    .context("docker build failed")
+    .map_err(|e| {
+      let msg = err_to_string(e);
+      step_error(app, run_id, "docker_build", &msg);
+      anyhow!(msg)
+    })?;
   step_ok(app, run_id, "docker_build");
 
   // generate pairing artifacts before building the image so we can inject them
@@ -223,7 +236,13 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
     cmd.args(["--device", "/dev/kvm"]);
   }
 
-  run_with_output(app, run_id, "docker_run", &mut cmd).context("docker run failed")?;
+  run_with_output(app, run_id, "docker_run", &mut cmd)
+    .context("docker run failed")
+    .map_err(|e| {
+      let msg = err_to_string(e);
+      step_error(app, run_id, "docker_run", &msg);
+      anyhow!(msg)
+    })?;
   step_ok(app, run_id, "docker_run");
 
   // verify the output and copy the qr code to the requested path

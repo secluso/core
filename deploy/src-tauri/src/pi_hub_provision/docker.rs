@@ -1,6 +1,6 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pi_hub_provision::events::handle_event_line;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -26,13 +26,34 @@ pub fn docker_version() -> Result<String> {
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .output()
-    .context("failed to run docker --version")?;
+    .map_err(|_| anyhow!("Docker is not installed or not available on PATH. Install Docker and try again."))?;
 
   if !out.status.success() {
-    bail!("docker --version failed");
+    bail!("Docker is not installed or not available on PATH. Install Docker and try again.");
   }
 
   Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+pub fn docker_ready() -> Result<String> {
+  let client_version = docker_version()?;
+  let out = Command::new("docker")
+    .args(["info", "--format", "{{.ServerVersion}}"])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .map_err(|_| anyhow!("Docker is installed, but the Docker daemon is not reachable. Start Docker and try again."))?;
+
+  if !out.status.success() {
+    bail!("Docker is installed, but the Docker daemon is not reachable. Start Docker and try again.");
+  }
+
+  let server_version = String::from_utf8_lossy(&out.stdout).trim().trim_matches('"').to_string();
+  if server_version.is_empty() {
+    return Ok(client_version);
+  }
+
+  Ok(format!("{client_version} | server {server_version}"))
 }
 
 pub fn run_with_output(app: &AppHandle, run_id: Uuid, step: &str, cmd: &mut Command) -> Result<()> {
