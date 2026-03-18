@@ -1837,7 +1837,10 @@ dependencies = [
 name = "secluso-client-server-lib"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "rand",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

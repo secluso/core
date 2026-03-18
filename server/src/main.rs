@@ -678,13 +678,31 @@ async fn livestream_retrieve(
     }
 
     if camera_path.exists() {
-        if !filepath.exists() {
-            let user_state = get_user_state(all_state.inner().clone(), &auth.username);
-            let mut rx = user_state.sender.subscribe();
-            let _ = rx.recv().await;
+        let user_state = get_user_state(all_state.inner().clone(), &auth.username);
+        let mut rx = user_state.sender.subscribe();
+
+        // IMPORTANT: If we check the filepath exists() first and only subscribe after, there is a tiny race:
+        // 1. app asks for the next livestream chunk
+        // 2. we check disk and don't see it yet
+        // 3. camera uploads that chunk and sends the new chunk signal
+        // 4. we subscribe too late and miss that signal
+        // 5. this request can sit here forever even though the chunk exists
+        //
+        // So we subscribe up front, then keep re-checking the file.
+        for _ in 0..3 {
+            if filepath.exists() {
+                let response = File::open(&filepath).await.map(RawText).ok();
+                return response;
+            }
+
+            // Don't hang this request forever if the chunk never arrives.
+            let _ = timeout(Duration::from_secs(5), rx.recv()).await;
         }
-        let response = File::open(&filepath).await.map(RawText).ok();
-        return response;
+
+        if filepath.exists() {
+            let response = File::open(&filepath).await.map(RawText).ok();
+            return response;
+        }
     }
 
     None
