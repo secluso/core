@@ -12,9 +12,9 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use secluso_update::{
-    build_github_client, default_signers, download_and_verify_component, fetch_latest_release,
-    get_current_version, github_token_from_env, parse_sig_keys, write_current_version, Component,
-    DEFAULT_OWNER_REPO,
+    build_github_client, default_signers, download_and_verify_component, fetch_versioned_release,
+    get_current_version, github_token_from_env, parse_sig_keys, server_version,
+    write_current_version, Component, DEFAULT_OWNER_REPO,
 };
 
 const USAGE: &str = r#"
@@ -98,6 +98,22 @@ fn check_update(args: &Args) -> Result<()> {
     let current_version = get_current_version(component).unwrap_or_else(|_| Version::new(0, 0, 0));
     println!("Current Version = {current_version}");
 
+    let server_version = server_version().ok().flatten();
+    let parsed_server_version = server_version
+        .as_deref()
+        .map(|s| s.trim().trim_start_matches('v'))
+        .and_then(|s| Version::parse(s).ok());
+
+    let proceed = parsed_server_version
+        .is_some_and(|parsed_version| current_version < parsed_version);
+
+    // We don't proceed unless the server version is greater than the component version
+    if !proceed {
+        let shown_version = server_version.as_deref().unwrap_or("UNKNOWN");
+        println!("Server version is {}; update not needed yet", shown_version);
+        return Ok(());
+    }
+
     let github_token = github_token_from_env();
     let client = build_github_client(
         args.flag_github_timeout_secs,
@@ -112,18 +128,12 @@ fn check_update(args: &Args) -> Result<()> {
         args.flag_github_repo.clone()
     };
 
-    let release = fetch_latest_release(&client, &github_repo)?;
-    println!("Latest Tag = {}", release.tag_name);
+    // Fetch the server's matching version release from github, so that we stay consistent.
+    let release = fetch_versioned_release(&client, &github_repo, &server_version.unwrap())?;
+    println!("Found Server Github Release Tag = {}", release.tag_name);
     if let Some(p) = &release.published_at {
         println!("Published At = {}", p);
     }
-
-    let latest_version = release.parsed_version()?;
-    if latest_version <= current_version {
-        println!("Already on latest version ({current_version}).");
-        return Ok(());
-    }
-    println!("Found newer version: {latest_version}");
 
     // download_and_verify_component performs the full cryptographic verification pipeline and returns
     // only authenticated component bytes. allows focus below on atomic file placement.

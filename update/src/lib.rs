@@ -26,10 +26,17 @@ use sequoia_openpgp as openpgp;
 // Binaries stored in INSTALL_ROOT/bin/BINARY_NAME
 pub const INSTALL_ROOT: &str = "/opt/secluso";
 
+// Where we store camera secrets, *user credentials*, etc.
+pub const WORKING_DIRECTORY: &str = "/var/lib/secluso";
+
 // Where we fetch releases from (unless changed by the program dev settings)
 pub const DEFAULT_OWNER_REPO: &str = "secluso/secluso";
 
 const MANIFEST_PATH: &str = "manifest.json";
+
+// The length of the username and password for the user credentials file.
+pub const NUM_USERNAME_CHARS: usize = 14;
+pub const NUM_PASSWORD_CHARS: usize = 14;
 
 /// A signer entry: label controls signature filename, github_user controls accepted keyring source.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,6 +123,41 @@ pub struct VerifiedComponent {
     pub component_path: String,
     pub component_bytes: Vec<u8>,
     pub bundle_bytes: Vec<u8>,
+}
+
+pub fn server_version() -> Result<Option<String>> {
+    let file_path = format!("{}/{}", WORKING_DIRECTORY, "credentials_full");
+
+    let credentials_exist = fs::exists(&file_path)?;
+    if !credentials_exist {
+        return Ok(None);
+    }
+
+    let user_credentials_contents = fs::read_to_string(&file_path)?;
+    if user_credentials_contents.len() < NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS + 4 {
+        return Ok(None);
+    }
+
+    let server_username = &user_credentials_contents[..NUM_USERNAME_CHARS - 1];
+    let server_password =
+        &user_credentials_contents[NUM_USERNAME_CHARS..NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS - 1];
+    let server_addr = &user_credentials_contents[NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS..];
+
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .get(format!("{}/status", server_addr.trim_end_matches('/')))
+        .basic_auth(server_username, Some(server_password))
+        .send()?;
+
+    if response.status().is_success() {
+        if let Some(server_version) = response.headers().get("X-Server-Version") {
+            if let Ok(version_str) = server_version.to_str() {
+                return Ok(Some(version_str.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 impl Component {
@@ -256,10 +298,10 @@ pub fn build_github_client(
 // Fetches the latest release metadata from GitHub's API endpoint for the target repo.
 // Callers are expected to apply additional policy checks (draft/published/immutable) before trusting
 // the returned release for installation decisions.
-pub fn fetch_latest_release(client: &Client, owner_repo: &str) -> Result<GhRelease> {
+pub fn fetch_versioned_release(client: &Client, owner_repo: &str, tag_name: &str) -> Result<GhRelease> {
     let url = format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        owner_repo
+        "https://api.github.com/repos/{}/releases/tags/{}",
+        owner_repo, tag_name
     );
     let resp = client.get(&url).send()?.error_for_status()?;
     Ok(resp.json::<GhRelease>()?)
