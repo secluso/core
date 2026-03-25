@@ -6,6 +6,10 @@ use crate::pi_hub_provision::model::{Apt, Config, RuntimeConfig, Secluso, SigKey
 use crate::pi_hub_provision::temp::{shared_temp_root, shared_temp_dir};
 use crate::pi_hub_provision::{BuildImageRequest, BuildImageResponse};
 use anyhow::{anyhow, bail, Context, Result};
+use secluso_update::{
+    build_github_client, default_signers, download_and_verify_component, fetch_latest_release, Component as ReleaseComponent,
+    Signer,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -62,6 +66,42 @@ fn normalize_repo(input: &str) -> String {
         return repo.trim_end_matches(".git").to_string();
     }
     trimmed.trim_end_matches(".git").to_string()
+}
+
+fn resolve_signers(sig_keys: Option<&[SigKey]>) -> Vec<Signer> {
+    let Some(sig_keys) = sig_keys else {
+        return default_signers();
+    };
+
+    if sig_keys.is_empty() {
+        return default_signers();
+    }
+
+    sig_keys
+        .iter()
+        .map(|key| Signer {
+            label: key.name.trim().to_string(),
+            github_user: key.github_user.trim().to_string(),
+        })
+        .collect()
+}
+
+fn download_verified_bundle(owner_repo: &str, sig_keys: Option<&[SigKey]>, github_token: Option<&str>) -> Result<(String, Vec<u8>)> {
+    let signers = resolve_signers(sig_keys);
+    let client = build_github_client(20, github_token, "secluso-deploy")?;
+    let release = fetch_latest_release(&client, owner_repo)
+        .with_context(|| format!("Fetching latest release metadata for {owner_repo}"))?;
+    let verified = download_and_verify_component(
+        &client,
+        &release,
+        ReleaseComponent::RaspberryCameraHub,
+        "aarch64",
+        None,
+        &signers,
+    )
+    .context("Downloading and verifying Raspberry Pi bundle")?;
+
+    Ok((verified.release_tag, verified.bundle_bytes))
 }
 
 fn normalize_ssh_suffix(output_name: &str, ssh_enabled: bool) -> String {
@@ -203,6 +243,38 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
         generate_secluso_credentials(app, run_id, work_path, &repo, sig_keys, github_token)?;
     }
     step_ok(app, run_id, "credentials");
+
+    if let Some(secluso) = &cfg.secluso {
+        step_start(app, run_id, "artifacts", "Downloading verified bundle");
+        let repo = secluso
+            .repo
+            .as_deref()
+            .map(normalize_repo)
+            .unwrap_or_else(|| "secluso/secluso".to_string());
+        let sig_keys = secluso.sig_keys.as_deref();
+        let github_token = secluso.github_token.as_deref();
+        let (release_tag, bundle_bytes) = download_verified_bundle(&repo, sig_keys, github_token)
+            .map_err(|e| {
+                let msg = format!("{e:#}");
+                step_error(app, run_id, "artifacts", &msg);
+                anyhow!(msg)
+            })?;
+        fs::write(work_path.join("secluso_bundle.zip"), bundle_bytes)
+            .with_context(|| format!("writing {}", work_path.join("secluso_bundle.zip").display()))
+            .map_err(|e| {
+                let msg = format!("{e:#}");
+                step_error(app, run_id, "artifacts", &msg);
+                anyhow!(msg)
+            })?;
+        log_line(
+            app,
+            run_id,
+            "info",
+            Some("artifacts"),
+            format!("Verified Raspberry Pi bundle {release_tag} for {repo}."),
+        );
+        step_ok(app, run_id, "artifacts");
+    }
 
 
     let mut base_image = DEFAULT_BASE_IMAGE;

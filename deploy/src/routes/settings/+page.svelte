@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { goto } from "$app/navigation";
 
   type DevSettings = {
@@ -43,6 +43,8 @@
   };
 
   let devSettings: DevSettings = { ...defaultSettings };
+  let saveSuccess = false;
+  let saveResetTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -57,11 +59,21 @@
 
   function saveSettings() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(devSettings));
+    saveSuccess = true;
+    if (saveResetTimer) clearTimeout(saveResetTimer);
+    saveResetTimer = setTimeout(() => {
+      saveSuccess = false;
+      saveResetTimer = null;
+    }, 1600);
   }
 
   function goBack() {
     goto("/");
   }
+
+  onDestroy(() => {
+    if (saveResetTimer) clearTimeout(saveResetTimer);
+  });
 </script>
 
 <main class="page">
@@ -280,7 +292,14 @@
       </section>
     {/if}
 
-    <button class="save-button" on:click={saveSettings}>Save</button>
+    <div class="save-row">
+      <button class:success={saveSuccess} class="save-button" on:click={saveSettings}>
+        {saveSuccess ? "Saved" : "Save"}
+      </button>
+      {#if saveSuccess}
+        <span class="save-status" aria-live="polite">Settings saved</span>
+      {/if}
+    </div>
   </section>
 </main>
 
@@ -318,17 +337,15 @@
     position: relative;
     width: min(calc(100% - 48px), 528px);
     margin: 0 auto;
-    padding-top: 120px;
+    padding-top: 44px;
     z-index: 1;
   }
 
   .back-link {
-    position: absolute;
-    left: 0;
-    top: 0;
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    margin-bottom: 28px;
     color: rgba(255, 255, 255, 0.4);
     font-size: 13px;
     line-height: 19.5px;
@@ -622,8 +639,14 @@
     margin-top: 0;
   }
 
-  .save-button {
+  .save-row {
     margin-top: 32px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .save-button {
     width: 80.4px;
     height: 45px;
     border: 0;
@@ -635,12 +658,23 @@
     font-weight: 500;
     font-family: inherit;
     cursor: pointer;
+    transition: background-color 0.16s ease;
+  }
+
+  .save-button.success {
+    background: #00bc7d;
+  }
+
+  .save-status {
+    color: rgba(0, 212, 146, 0.9);
+    font-size: 12px;
+    line-height: 18px;
   }
 
   @media (max-width: 640px) {
     .content {
       width: calc(100% - 32px);
-      padding-top: 96px;
+      padding-top: 44px;
     }
 
     .gear-ghost {
