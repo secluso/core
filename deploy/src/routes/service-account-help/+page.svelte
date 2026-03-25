@@ -61,7 +61,7 @@
 </main>
 
 <style>
-.wrap { max-width: 980px; margin: 0 auto; padding: 20px 20px 60px; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 44px 20px 60px; }
 .topbar { display: grid; grid-template-columns: 120px 1fr 120px; align-items: center; gap: 12px; margin: 8px 0 18px; }
 .topbar h1 { text-align: center; margin: 0; font-size: 1.6rem; }
 .spacer { width: 100%; }

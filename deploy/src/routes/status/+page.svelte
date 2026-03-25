@@ -410,7 +410,7 @@
   .frame {
     width: min(100%, 528px);
     margin: 0 auto;
-    padding: 8px 24px 56px;
+    padding: 24px 24px 56px;
     box-sizing: border-box;
   }
 
@@ -559,6 +559,7 @@
     height: 16.56px;
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.05);
     transition: background-color 140ms ease;
     display: inline-flex;
     align-items: center;
@@ -577,6 +578,7 @@
 
   .guidance-switch input:checked + .guidance-track {
     background: #2b7fff;
+    border-color: transparent;
   }
 
   .guidance-switch input:checked + .guidance-track .guidance-thumb {

@@ -66,18 +66,6 @@
 
 <main class="page">
   <div class="page-backdrop"></div>
-
-  <header class="appbar">
-    <div class="appbar-inner">
-      <div class="brand">
-        <img src="/deploy-assets/header-mark.jpeg" alt="" />
-        <span>Secluso</span>
-        <small>v0.1.0</small>
-        <span class="status-pill"><i></i>Latest Version</span>
-      </div>
-    </div>
-  </header>
-
   <section class="content">
     <a class="back-link" href="/" on:click|preventDefault={goBack}>
       <img src={backIcon} alt="" />
@@ -324,75 +312,6 @@
       radial-gradient(420px 220px at 50% 0, rgba(43, 127, 255, 0.1), transparent 68%),
       linear-gradient(180deg, rgba(3, 3, 3, 0.98), #030303 42%);
     opacity: 0.45;
-  }
-
-  .appbar {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    height: 57px;
-    background: rgba(3, 3, 3, 0.9);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-  }
-
-  .appbar-inner {
-    max-width: 672px;
-    width: 100%;
-    height: 100%;
-    margin: 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    padding: 0 24px;
-  }
-
-  .brand {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: #fff;
-    font-size: 13px;
-    font-weight: 500;
-    line-height: 21px;
-  }
-
-  .brand img {
-    width: 28px;
-    height: 28px;
-    border-radius: 16px;
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
-  }
-
-  .brand small {
-    color: rgba(255, 255, 255, 0.25);
-    font-size: 11px;
-    font-weight: 500;
-    line-height: 16.5px;
-  }
-
-  .status-pill {
-    height: 25px;
-    padding: 0 9px 0 8px;
-    border-radius: 999px;
-    background: rgba(0, 188, 125, 0.08);
-    border: 1px solid rgba(0, 188, 125, 0.1);
-    color: rgba(0, 212, 146, 0.92);
-    font-size: 10px;
-    font-weight: 500;
-    line-height: 15px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .status-pill i {
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
-    background: #00d492;
-    display: block;
-    font-style: normal;
   }
 
   .content {

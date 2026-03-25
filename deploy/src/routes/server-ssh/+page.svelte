@@ -391,17 +391,6 @@
     </div>
   {/if}
 
-  <header class="appbar">
-    <div class="appbar-inner">
-      <div class="brand">
-        <img src="/deploy-assets/header-mark.jpeg" alt="" />
-        <span>Secluso</span>
-        <small>v0.1.0</small>
-        <span class="status-pill"><i></i>Latest Version</span>
-      </div>
-    </div>
-  </header>
-
   <section class="frame">
     <div class="toolbar">
       <button class="back" type="button" on:click={goBack}>
@@ -410,7 +399,10 @@
       </button>
       <label class="tips-toggle">
         <span>Show tips</span>
-        <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+        <span class="tips-switch">
+          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
+          <span class="tips-track"></span>
+        </span>
       </label>
     </div>
 
@@ -646,72 +638,12 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   }
 
-  .appbar-inner {
-    max-width: 672px;
-    width: 100%;
-    height: 100%;
-    margin: 0 auto;
-    padding: 0 24px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    box-sizing: border-box;
-  }
-
-  .brand {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: #fff;
-    font-size: 14px;
-    font-weight: 500;
-    line-height: 21px;
-  }
-
-  .brand img {
-    width: 28px;
-    height: 28px;
-    border-radius: 16px;
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
-  }
-
-  .brand small {
-    color: rgba(255, 255, 255, 0.25);
-    font-size: 11px;
-    font-weight: 500;
-    line-height: 16.5px;
-  }
-
-  .status-pill {
-    height: 25px;
-    padding: 0 9px 0 8px;
-    border-radius: 999px;
-    background: rgba(0, 188, 125, 0.08);
-    border: 1px solid rgba(0, 188, 125, 0.1);
-    color: rgba(0, 212, 146, 0.92);
-    font-size: 10px;
-    font-weight: 500;
-    line-height: 15px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .status-pill i {
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
-    background: #00d492;
-    display: block;
-    font-style: normal;
-  }
-
   .frame {
     position: relative;
     z-index: 1;
     max-width: 528px;
     margin: 0 auto;
-    padding: 0 24px;
+    padding: 24px 24px 0;
     box-sizing: border-box;
   }
 
@@ -751,19 +683,34 @@
     line-height: 16.5px;
   }
 
-  .tips-toggle input {
-    appearance: none;
+  .tips-switch {
+    position: relative;
     width: 24px;
     height: 13.8px;
-    margin: 0;
-    border-radius: 999px;
-    border: 1px solid transparent;
-    background: rgba(255, 255, 255, 0.08);
-    position: relative;
     flex: 0 0 auto;
   }
 
-  .tips-toggle input::after {
+  .tips-switch input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .tips-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    box-sizing: border-box;
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease;
+  }
+
+  .tips-track::after {
     content: "";
     position: absolute;
     top: 0.9px;
@@ -772,14 +719,15 @@
     height: 12px;
     border-radius: 999px;
     background: #030303;
-    transition: transform 120ms ease;
+    transition: transform 140ms ease;
   }
 
-  .tips-toggle input:checked {
-    background: #00bc7d;
+  .tips-switch input:checked + .tips-track {
+    background: #2b7fff;
+    border-color: transparent;
   }
 
-  .tips-toggle input:checked::after {
+  .tips-switch input:checked + .tips-track::after {
     transform: translateX(10.25px);
   }
 
