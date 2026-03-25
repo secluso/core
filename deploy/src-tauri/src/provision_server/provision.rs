@@ -2,7 +2,7 @@
 use crate::pi_hub_provision::credentials::generate_user_credentials_only;
 use crate::pi_hub_provision::temp::shared_temp_dir;
 use crate::provision_server::events::{log_line, step_ok, step_start};
-use crate::provision_server::preflight::{analyze_server_url_for_preflight, run_preflight};
+use crate::provision_server::preflight::run_preflight;
 use crate::provision_server::script::remote_provision_script;
 use crate::provision_server::ssh::{connect_ssh, exec_remote_script_streaming, scp_upload_bytes, sudo_prefix};
 use crate::provision_server::types::{ServerPlan, ServerSecrets, SshTarget};
@@ -133,20 +133,7 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
   let (sudo_cmd, sudo_pw) = sudo_prefix(&target);
 
   step_start(app, run_id, "preflight", "Checking server compatibility");
-  let server_url_checks = analyze_server_url_for_preflight(
-    &target,
-    Some(&plan.runtime),
-    plan.secrets.as_ref().map(|secrets| secrets.server_url.as_str()),
-  );
-  let preflight = run_preflight(
-    app,
-    run_id,
-    "preflight",
-    &sess,
-    &target,
-    Some(&plan.runtime),
-    server_url_checks.as_ref(),
-  )?;
+  let preflight = run_preflight(app, run_id, "preflight", &sess, &target, Some(&plan.runtime))?;
   step_ok(app, run_id, "preflight");
 
   // detect remote state

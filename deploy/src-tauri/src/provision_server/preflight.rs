@@ -4,7 +4,6 @@ use crate::provision_server::types::{ServerRuntimePlan, SshAuth, SshTarget};
 use anyhow::{bail, Context, Result};
 use ssh2::Session;
 use std::io::{Read, Write};
-use std::net::{IpAddr, ToSocketAddrs};
 use tauri::AppHandle;
 use uuid::Uuid;
 
@@ -22,17 +21,6 @@ pub struct PreflightReport {
   pub remote_arch: String,
 }
 
-pub struct ServerUrlPreflightChecks {
-  pub parse_failed: bool,
-  pub direct_non_http: bool,
-  pub direct_port_mismatch: bool,
-  pub proxy_mode: bool,
-  pub localhost_host: bool,
-  pub private_host: bool,
-  pub host_resolves_away_from_target: bool,
-  pub host_resolution_failed: bool,
-}
-
 struct ExecResult {
   stdout: String,
   stderr: String,
@@ -46,10 +34,8 @@ pub fn run_preflight(
   sess: &Session,
   target: &SshTarget,
   runtime: Option<&ServerRuntimePlan>,
-  server_url_checks: Option<&ServerUrlPreflightChecks>,
 ) -> Result<PreflightReport> {
   log_line(app, run_id, "info", Some(step), "Starting server preflight checks.");
-  log_server_url_checks(app, run_id, step, server_url_checks);
 
   let uname = remote_shell(sess, "uname -s", None)?;
   let kernel = uname.stdout.trim();
@@ -242,155 +228,6 @@ pub fn run_preflight(
     remote_has_credentials_full,
     remote_arch,
   })
-}
-
-pub fn analyze_server_url_for_preflight(
-  target: &SshTarget,
-  runtime: Option<&ServerRuntimePlan>,
-  server_url: Option<&str>,
-) -> Option<ServerUrlPreflightChecks> {
-  let server_url = server_url.map(str::trim).filter(|value| !value.is_empty())?;
-
-  let exposure_mode = runtime.map(|value| value.exposure_mode.as_str()).unwrap_or("direct");
-  let listen_port = runtime.map(|value| value.listen_port).unwrap_or(DEFAULT_SERVER_HTTP_PORT);
-  let mut checks = ServerUrlPreflightChecks {
-    parse_failed: false,
-    direct_non_http: false,
-    direct_port_mismatch: false,
-    proxy_mode: exposure_mode == "proxy",
-    localhost_host: false,
-    private_host: false,
-    host_resolves_away_from_target: false,
-    host_resolution_failed: false,
-  };
-
-  match reqwest::Url::parse(server_url) {
-    Ok(url) => {
-      if exposure_mode == "direct" && url.scheme() != "http" {
-        checks.direct_non_http = true;
-      }
-
-      let port = url.port_or_known_default().unwrap_or(listen_port);
-      if exposure_mode == "direct" && port != listen_port {
-        checks.direct_port_mismatch = true;
-      }
-
-      if let Some(host) = url.host_str() {
-        checks.localhost_host = host.eq_ignore_ascii_case("localhost");
-
-        if let Ok(ip) = host.parse::<IpAddr>() {
-          checks.private_host = is_private_ip(ip);
-        }
-
-        if let Ok(target_ip) = target.host.parse::<IpAddr>() {
-          let lookup_host = format!("{}:{}", host, port);
-          match lookup_host.to_socket_addrs() {
-            Ok(addrs) => {
-              let resolved = addrs.map(|addr| addr.ip()).collect::<Vec<_>>();
-              if !resolved.is_empty() && !resolved.contains(&target_ip) {
-                checks.host_resolves_away_from_target = true;
-              }
-            }
-            Err(_) => {
-              checks.host_resolution_failed = true;
-            }
-          }
-        }
-      }
-    }
-    Err(_) => {
-      checks.parse_failed = true;
-    }
-  }
-
-  Some(checks)
-}
-
-fn log_server_url_checks(
-  app: &AppHandle,
-  run_id: Uuid,
-  step: &str,
-  checks: Option<&ServerUrlPreflightChecks>,
-) {
-  let Some(checks) = checks else {
-    return;
-  };
-
-  if checks.parse_failed {
-    log_line(
-      app,
-      run_id,
-      "warn",
-      Some(step),
-      "Could not parse the configured credentials URL.".to_string(),
-    );
-    return;
-  }
-
-  if checks.direct_non_http {
-    log_line(
-      app,
-      run_id,
-      "warn",
-      Some(step),
-      "Direct mode expects an http URL.".to_string(),
-    );
-  }
-  if checks.direct_port_mismatch {
-    log_line(
-      app,
-      run_id,
-      "warn",
-      Some(step),
-      "The configured public URL port does not match Secluso's direct listen port.".to_string(),
-    );
-  }
-  if checks.proxy_mode {
-    log_line(
-      app,
-      run_id,
-      "info",
-      Some(step),
-      "Reverse proxy mode selected. The public URL port may differ from Secluso's local listen port.".to_string(),
-    );
-  }
-  if checks.localhost_host {
-    log_line(
-      app,
-      run_id,
-      "warn",
-      Some(step),
-      "Credentials URL points at localhost. That only works on the same machine, not from the mobile app.".to_string(),
-    );
-  }
-  if checks.private_host {
-    log_line(
-      app,
-      run_id,
-      "warn",
-      Some(step),
-      "Credentials URL points at a private/local address. Remote access will only work if the phone can reach that network or VPN."
-        .to_string(),
-    );
-  }
-  if checks.host_resolves_away_from_target {
-    log_line(
-      app,
-      run_id,
-      "warn",
-      Some(step),
-      "The configured credentials host does not resolve to the SSH target IP.".to_string(),
-    );
-  }
-  if checks.host_resolution_failed {
-    log_line(
-      app,
-      run_id,
-      "warn",
-      Some(step),
-      "Could not resolve the configured credentials host.".to_string(),
-    );
-  }
 }
 
 fn verify_sudo_access(app: &AppHandle, run_id: Uuid, step: &str, sess: &Session, target: &SshTarget) -> Result<()> {
@@ -617,13 +454,4 @@ fn summarize_remote_failure(result: &ExecResult) -> String {
     return stdout.to_string();
   }
   format!("command exited with status {}", result.exit)
-}
-
-fn is_private_ip(ip: IpAddr) -> bool {
-  match ip {
-    IpAddr::V4(ip) => {
-      ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.octets()[0] == 0
-    }
-    IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
-  }
 }

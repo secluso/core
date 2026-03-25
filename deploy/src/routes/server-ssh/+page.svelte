@@ -182,10 +182,20 @@
     }
   }
 
-  function credentialsHostWarning(urlValue: string): string | null {
+  function credentialsUrlWarning(urlValue: string): string | null {
     if (!urlValue) return null;
     try {
       const url = new URL(urlValue);
+      const runtime = buildRuntimePlan();
+      if (effectiveAccessMode() === "direct") {
+        if (url.protocol === "https:") {
+          return "Direct mode serves Secluso over plain HTTP on the server port.";
+        }
+        const effectivePort = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+        if (effectivePort !== runtime.listenPort) {
+          return "This public URL port does not match the configured Secluso listen port.";
+        }
+      }
       const hostValue = url.hostname;
       if (hostValue === "localhost" || hostValue === "127.0.0.1" || hostValue === "::1") {
         return "localhost only works on the same machine. Use your public server IP or domain for phone access.";
@@ -550,8 +560,8 @@
         <label class="field">
           <span>Final app URL</span>
           <input readonly value={buildCredentialsServerUrl()} />
-          {#if credentialsHostWarning(buildCredentialsServerUrl())}
-            <small class="warn-text">{credentialsHostWarning(buildCredentialsServerUrl())}</small>
+          {#if credentialsUrlWarning(buildCredentialsServerUrl())}
+            <small class="warn-text">{credentialsUrlWarning(buildCredentialsServerUrl())}</small>
           {/if}
         </label>
       {/if}
