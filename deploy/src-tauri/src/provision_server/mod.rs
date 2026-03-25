@@ -7,7 +7,7 @@ mod ssh;
 mod types;
 
 use crate::provision_server::events::{emit, log_line, step_error, step_ok, step_start, ProvisionEvent};
-use crate::provision_server::preflight::run_preflight;
+use crate::provision_server::preflight::{analyze_server_url_for_preflight, run_preflight};
 use crate::provision_server::provision::run_provision;
 use crate::provision_server::ssh::connect_ssh;
 use crate::provision_server::types::{ServerPlan, ServerRuntimePlan, SshTarget};
@@ -19,7 +19,7 @@ use uuid::Uuid;
 // tauri commands
 
 #[tauri::command]
-pub async fn test_server_ssh(app: AppHandle, target: SshTarget, runtime: Option<ServerRuntimePlan>, server_url: Option<String>) -> Result<(), String> {
+pub async fn test_server_ssh(app: AppHandle, target: SshTarget, runtime: Option<ServerRuntimePlan>, _server_url: Option<String>) -> Result<(), String> {
   let run_id = Uuid::new_v4();
   step_start(&app, run_id, "ssh_test", "Connecting via SSH");
 
@@ -28,7 +28,16 @@ pub async fn test_server_ssh(app: AppHandle, target: SshTarget, runtime: Option<
     let (sess, _temps) = connect_ssh(&target)?;
     step_ok(&app2, run_id, "ssh_test");
     step_start(&app2, run_id, "preflight", "Checking server compatibility");
-    run_preflight(&app2, run_id, "preflight", &sess, &target, runtime.as_ref(), server_url.as_deref())?;
+    let server_url_checks = analyze_server_url_for_preflight(&target, runtime.as_ref(), _server_url.as_deref());
+    run_preflight(
+      &app2,
+      run_id,
+      "preflight",
+      &sess,
+      &target,
+      runtime.as_ref(),
+      server_url_checks.as_ref(),
+    )?;
     step_ok(&app2, run_id, "preflight");
     Ok(())
   })

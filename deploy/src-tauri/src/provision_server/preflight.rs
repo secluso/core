@@ -22,6 +22,17 @@ pub struct PreflightReport {
   pub remote_arch: String,
 }
 
+pub struct ServerUrlPreflightChecks {
+  pub parse_failed: bool,
+  pub direct_non_http: bool,
+  pub direct_port_mismatch: bool,
+  pub proxy_mode: bool,
+  pub localhost_host: bool,
+  pub private_host: bool,
+  pub host_resolves_away_from_target: bool,
+  pub host_resolution_failed: bool,
+}
+
 struct ExecResult {
   stdout: String,
   stderr: String,
@@ -35,10 +46,10 @@ pub fn run_preflight(
   sess: &Session,
   target: &SshTarget,
   runtime: Option<&ServerRuntimePlan>,
-  server_url: Option<&str>,
+  server_url_checks: Option<&ServerUrlPreflightChecks>,
 ) -> Result<PreflightReport> {
   log_line(app, run_id, "info", Some(step), "Starting server preflight checks.");
-  log_server_url_checks(app, run_id, step, target, runtime, server_url);
+  log_server_url_checks(app, run_id, step, server_url_checks);
 
   let uname = remote_shell(sess, "uname -s", None)?;
   let kernel = uname.stdout.trim();
@@ -233,109 +244,152 @@ pub fn run_preflight(
   })
 }
 
-fn log_server_url_checks(
-  app: &AppHandle,
-  run_id: Uuid,
-  step: &str,
+pub fn analyze_server_url_for_preflight(
   target: &SshTarget,
   runtime: Option<&ServerRuntimePlan>,
   server_url: Option<&str>,
-) {
-  let Some(server_url) = server_url.map(str::trim).filter(|v| !v.is_empty()) else {
-    return;
+) -> Option<ServerUrlPreflightChecks> {
+  let server_url = server_url.map(str::trim).filter(|value| !value.is_empty())?;
+
+  let exposure_mode = runtime.map(|value| value.exposure_mode.as_str()).unwrap_or("direct");
+  let listen_port = runtime.map(|value| value.listen_port).unwrap_or(DEFAULT_SERVER_HTTP_PORT);
+  let mut checks = ServerUrlPreflightChecks {
+    parse_failed: false,
+    direct_non_http: false,
+    direct_port_mismatch: false,
+    proxy_mode: exposure_mode == "proxy",
+    localhost_host: false,
+    private_host: false,
+    host_resolves_away_from_target: false,
+    host_resolution_failed: false,
   };
 
   match reqwest::Url::parse(server_url) {
     Ok(url) => {
-      let exposure_mode = runtime.map(|value| value.exposure_mode.as_str()).unwrap_or("direct");
-      let listen_port = runtime.map(|value| value.listen_port).unwrap_or(DEFAULT_SERVER_HTTP_PORT);
       if exposure_mode == "direct" && url.scheme() != "http" {
-        log_line(
-          app,
-          run_id,
-          "warn",
-          Some(step),
-          "Direct mode expects an http URL.".to_string(),
-        );
+        checks.direct_non_http = true;
       }
+
       let port = url.port_or_known_default().unwrap_or(listen_port);
       if exposure_mode == "direct" && port != listen_port {
-        log_line(
-          app,
-          run_id,
-          "warn",
-          Some(step),
-          "The configured public URL port does not match Secluso's direct listen port.".to_string(),
-        );
-      } else if exposure_mode == "proxy" {
-        log_line(
-          app,
-          run_id,
-          "info",
-          Some(step),
-          "Reverse proxy mode selected. The public URL port may differ from Secluso's local listen port.".to_string(),
-        );
+        checks.direct_port_mismatch = true;
       }
+
       if let Some(host) = url.host_str() {
-        if host.eq_ignore_ascii_case("localhost") {
-          log_line(
-            app,
-            run_id,
-            "warn",
-            Some(step),
-            "Credentials URL points at localhost. That only works on the same machine, not from the mobile app.".to_string(),
-          );
-        }
+        checks.localhost_host = host.eq_ignore_ascii_case("localhost");
+
         if let Ok(ip) = host.parse::<IpAddr>() {
-          if is_private_ip(ip) {
-            log_line(
-              app,
-              run_id,
-              "warn",
-              Some(step),
-              "Credentials URL points at a private/local address. Remote access will only work if the phone can reach that network or VPN."
-                .to_string(),
-            );
-          }
+          checks.private_host = is_private_ip(ip);
         }
+
         if let Ok(target_ip) = target.host.parse::<IpAddr>() {
           let lookup_host = format!("{}:{}", host, port);
           match lookup_host.to_socket_addrs() {
             Ok(addrs) => {
               let resolved = addrs.map(|addr| addr.ip()).collect::<Vec<_>>();
               if !resolved.is_empty() && !resolved.contains(&target_ip) {
-                log_line(
-                  app,
-                  run_id,
-                  "warn",
-                  Some(step),
-                  "The configured credentials host does not resolve to the SSH target IP.".to_string(),
-                );
+                checks.host_resolves_away_from_target = true;
               }
             }
-            Err(err) => {
-              let _ = err;
-              log_line(
-                app,
-                run_id,
-                "warn",
-                Some(step),
-                "Could not resolve the configured credentials host.".to_string(),
-              );
+            Err(_) => {
+              checks.host_resolution_failed = true;
             }
           }
         }
       }
     }
-    Err(err) => {
-      log_line(
-        app,
-        run_id,
-        "warn",
-        Some(step),
-        format!("Could not parse the configured credentials URL: {err}"),
-      );
+    Err(_) => {
+      checks.parse_failed = true;
     }
+  }
+
+  Some(checks)
+}
+
+fn log_server_url_checks(
+  app: &AppHandle,
+  run_id: Uuid,
+  step: &str,
+  checks: Option<&ServerUrlPreflightChecks>,
+) {
+  let Some(checks) = checks else {
+    return;
+  };
+
+  if checks.parse_failed {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      "Could not parse the configured credentials URL.".to_string(),
+    );
+    return;
+  }
+
+  if checks.direct_non_http {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      "Direct mode expects an http URL.".to_string(),
+    );
+  }
+  if checks.direct_port_mismatch {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      "The configured public URL port does not match Secluso's direct listen port.".to_string(),
+    );
+  }
+  if checks.proxy_mode {
+    log_line(
+      app,
+      run_id,
+      "info",
+      Some(step),
+      "Reverse proxy mode selected. The public URL port may differ from Secluso's local listen port.".to_string(),
+    );
+  }
+  if checks.localhost_host {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      "Credentials URL points at localhost. That only works on the same machine, not from the mobile app.".to_string(),
+    );
+  }
+  if checks.private_host {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      "Credentials URL points at a private/local address. Remote access will only work if the phone can reach that network or VPN."
+        .to_string(),
+    );
+  }
+  if checks.host_resolves_away_from_target {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      "The configured credentials host does not resolve to the SSH target IP.".to_string(),
+    );
+  }
+  if checks.host_resolution_failed {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      "Could not resolve the configured credentials host.".to_string(),
+    );
   }
 }
 
