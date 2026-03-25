@@ -81,6 +81,7 @@ pub struct GhAsset {
 #[derive(Debug, Clone, Copy)]
 pub enum Component {
     Server,
+    Updater,
     RaspberryCameraHub,
     ConfigTool,
 }
@@ -164,10 +165,11 @@ impl Component {
     pub fn parse(s: &str) -> Result<Self> {
         match s {
             "server" => Ok(Self::Server),
+            "updater" => Ok(Self::Updater),
             "raspberry_camera_hub" => Ok(Self::RaspberryCameraHub),
             "config_tool" => Ok(Self::ConfigTool),
             _ => bail!(
-                "Unknown component {}. Use one of: server | raspberry_camera_hub | config_tool",
+                "Unknown component {}. Use one of: server | updater | raspberry_camera_hub | config_tool",
                 s
             ),
         }
@@ -179,6 +181,10 @@ impl Component {
             (Self::Server, "x86_64") => Ok("x86_64-unknown-linux-gnu/secluso-server"),
             (Self::Server, "aarch64") => Ok("aarch64-unknown-linux-gnu/secluso-server"),
             (Self::Server, _) => bail!("component=server not supported on arch={}", arch),
+
+            (Self::Updater, "x86_64") => Ok("x86_64-unknown-linux-gnu/secluso-update"),
+            (Self::Updater, "aarch64") => Ok("aarch64-unknown-linux-gnu/secluso-update"),
+            (Self::Updater, _) => bail!("component=updater not supported on arch={}", arch),
 
             (Self::RaspberryCameraHub, "aarch64") => {
                 Ok("aarch64-unknown-linux-gnu/secluso-raspberry-camera-hub")
@@ -200,6 +206,7 @@ impl Component {
     pub fn install_path(self) -> String {
         let bin = match self {
             Self::Server => "secluso-server",
+            Self::Updater => "secluso-update",
             Self::RaspberryCameraHub => "secluso-raspberry-camera-hub",
             Self::ConfigTool => "secluso-config-tool",
         };
@@ -211,6 +218,7 @@ impl Component {
     pub fn version_file(self) -> String {
         let name = match self {
             Self::Server => "server",
+            Self::Updater => "updater",
             Self::RaspberryCameraHub => "raspberry_camera_hub",
             Self::ConfigTool => "config_tool",
         };

@@ -41,12 +41,12 @@ pub fn connect_ssh(target: &SshTarget) -> Result<(Session, TempKeyFiles)> {
       sess.userauth_password(&target.user, password)
         .context("SSH password authentication failed")?;
     }
-    SshAuth::KeyFile { path } => {
+    SshAuth::KeyFile { path, passphrase } => {
       let p = Path::new(path);
-      sess.userauth_pubkey_file(&target.user, None, p, None)
+      sess.userauth_pubkey_file(&target.user, None, p, passphrase.as_deref())
         .with_context(|| format!("SSH keyfile authentication failed (path={})", path))?;
     }
-    SshAuth::KeyText { text } => {
+    SshAuth::KeyText { text, passphrase } => {
       // write key text to a temp file and use it as a keyfile
       // most openssh private keys work with libssh2 if the format is supported
       let mut f = NamedTempFile::new().context("Failed to create temp key file")?;
@@ -64,7 +64,7 @@ pub fn connect_ssh(target: &SshTarget) -> Result<(Session, TempKeyFiles)> {
       let p = f.path().to_path_buf();
       temps.key_file = Some(f);
 
-      sess.userauth_pubkey_file(&target.user, None, &p, None)
+      sess.userauth_pubkey_file(&target.user, None, &p, passphrase.as_deref())
         .context("SSH pasted-key authentication failed")?;
     }
   }

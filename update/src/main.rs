@@ -27,7 +27,7 @@ Usage:
 
 Options:
   --component COMPONENT      Which single binary to update:
-                             server | raspberry_camera_hub | config_tool
+                             server | updater | raspberry_camera_hub | config_tool
   --restart-unit UNIT        systemd unit to restart after install (optional).
                              If omitted, no service is restarted.
   --interval-secs N          Poll interval seconds [default: 60].

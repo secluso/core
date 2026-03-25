@@ -102,29 +102,3 @@ pub fn run_with_output(app: &AppHandle, run_id: Uuid, step: &str, cmd: &mut Comm
 pub fn err_to_string(e: anyhow::Error) -> String {
   format!("{:#}", e)
 }
-
-pub struct DockerCleanup {
-  volume: String,
-  container: String,
-}
-
-impl DockerCleanup {
-  pub fn new(volume: String, container: String) -> Self {
-    Self { volume, container }
-  }
-}
-
-impl Drop for DockerCleanup {
-  fn drop(&mut self) {
-    let _ = Command::new("docker")
-      .args(["rm", "-f", &self.container])
-      .stdout(Stdio::null())
-      .stderr(Stdio::null())
-      .status();
-    let _ = Command::new("docker")
-      .args(["volume", "rm", "-f", &self.volume])
-      .stdout(Stdio::null())
-      .stderr(Stdio::null())
-      .status();
-  }
-}

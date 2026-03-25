@@ -4,8 +4,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type SshAuth =
   | { kind: "password"; password: string }
-  | { kind: "keyfile"; path: string }
-  | { kind: "keytext"; text: string };
+  | { kind: "keyfile"; path: string; passphrase?: string }
+  | { kind: "keytext"; text: string; passphrase?: string };
 
 export interface SudoSpec {
   mode: "same" | "password";
@@ -20,10 +20,15 @@ export interface SshTarget {
   sudo: SudoSpec;
 }
 
+export interface ServerRuntimePlan {
+  exposureMode: "direct" | "proxy";
+  bindAddress: string;
+  listenPort: number;
+}
+
 export interface ServerPlan {
-  useDocker: boolean;
-  protectPackages: boolean;
   autoUpdater: { enable: boolean };
+  runtime: ServerRuntimePlan;
   secrets?: { serviceAccountKeyPath: string; serverUrl: string; userCredentialsQrPath: string };
   overwrite?: boolean;
   sigKeys?: { name: string; githubUser: string }[];
@@ -67,8 +72,8 @@ export interface ImageBuildRequest {
   githubToken?: string;
 }
 
-export async function testServerSsh(target: SshTarget): Promise<void> {
-  await invoke("test_server_ssh", { target });
+export async function testServerSsh(target: SshTarget, runtime?: ServerRuntimePlan, serverUrl?: string): Promise<void> {
+  await invoke("test_server_ssh", { target, runtime, serverUrl });
 }
 
 export async function provisionServer(
