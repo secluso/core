@@ -318,7 +318,13 @@ fn verify_public_server_health(app: &AppHandle, run_id: Uuid, plan: &ServerPlan,
     .build()
     .context("Creating HTTP client for post-install health check")?;
 
-  log_line(app, run_id, "info", Some("health"), format!("Checking {status_url} from this computer."));
+  log_line(
+    app,
+    run_id,
+    "info",
+    Some("health"),
+    "Checking the public /status endpoint from this computer.".to_string(),
+  );
 
   let discover = client.get(&status_url).send();
   let discover = match discover {
@@ -326,15 +332,13 @@ fn verify_public_server_health(app: &AppHandle, run_id: Uuid, plan: &ServerPlan,
     Err(err) => {
       if plan.runtime.exposure_mode == "proxy" {
         bail!(
-          "Secluso finished installing, but {} is not reachable from this computer yet: {}. Check your reverse proxy route, TLS setup, and whether it forwards to 127.0.0.1:{}.",
-          status_url,
+          "Secluso finished installing, but the public /status endpoint is not reachable from this computer yet: {}. Check your reverse proxy route, TLS setup, and whether it forwards to 127.0.0.1:{}.",
           err,
           plan.runtime.listen_port
         );
       }
       bail!(
-        "Secluso finished installing, but {} is not reachable from this computer yet: {}. Check that port {} is open in the server firewall and your provider security group.",
-        status_url,
+        "Secluso finished installing, but the public /status endpoint is not reachable from this computer yet: {}. Check that port {} is open in the server firewall and your provider security group.",
         err,
         plan.runtime.listen_port
       );
@@ -347,7 +351,7 @@ fn verify_public_server_health(app: &AppHandle, run_id: Uuid, plan: &ServerPlan,
     .map(|value| value.to_string());
 
   let Some(server_version) = server_version else {
-    bail!("Reached the server, but it did not return X-Server-Version on {}. This does not look like a healthy Secluso server response.", status_url);
+    bail!("Reached the server, but it did not return X-Server-Version. This does not look like a healthy Secluso server response.");
   };
   log_line(app, run_id, "info", Some("health"), format!("Remote server version header: {server_version}"));
 
@@ -356,16 +360,21 @@ fn verify_public_server_health(app: &AppHandle, run_id: Uuid, plan: &ServerPlan,
     .header("Client-Version", &server_version)
     .basic_auth(username, Some(password))
     .send()
-    .with_context(|| format!("Authenticated health check failed for {status_url}"))?;
+    .context("Authenticated health check failed.")?;
 
   if !auth.status().is_success() {
     bail!(
-      "The server is reachable at {}, but the authenticated /status check failed with HTTP {}.",
-      status_url,
+      "The server is reachable, but the authenticated /status check failed with HTTP {}.",
       auth.status()
     );
   }
 
-  log_line(app, run_id, "info", Some("health"), format!("Authenticated public health check succeeded at {status_url}."));
+  log_line(
+    app,
+    run_id,
+    "info",
+    Some("health"),
+    "Authenticated public health check succeeded.".to_string(),
+  );
   Ok(())
 }

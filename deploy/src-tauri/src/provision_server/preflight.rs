@@ -245,7 +245,6 @@ fn log_server_url_checks(
     return;
   };
 
-  log_line(app, run_id, "info", Some(step), format!("Credentials URL: {server_url}"));
   match reqwest::Url::parse(server_url) {
     Ok(url) => {
       let exposure_mode = runtime.map(|value| value.exposure_mode.as_str()).unwrap_or("direct");
@@ -256,7 +255,7 @@ fn log_server_url_checks(
           run_id,
           "warn",
           Some(step),
-          format!("Direct mode expects an http URL. Got scheme {}.", url.scheme()),
+          "Direct mode expects an http URL.".to_string(),
         );
       }
       let port = url.port_or_known_default().unwrap_or(listen_port);
@@ -266,7 +265,7 @@ fn log_server_url_checks(
           run_id,
           "warn",
           Some(step),
-          format!("Credentials URL uses port {port}, but Secluso is configured to listen directly on port {listen_port}."),
+          "The configured public URL port does not match Secluso's direct listen port.".to_string(),
         );
       } else if exposure_mode == "proxy" {
         log_line(
@@ -274,7 +273,7 @@ fn log_server_url_checks(
           run_id,
           "info",
           Some(step),
-          format!("Reverse proxy mode selected. Public URL port {port} may differ from Secluso's local listen port {listen_port}."),
+          "Reverse proxy mode selected. The public URL port may differ from Secluso's local listen port.".to_string(),
         );
       }
       if let Some(host) = url.host_str() {
@@ -294,9 +293,8 @@ fn log_server_url_checks(
               run_id,
               "warn",
               Some(step),
-              format!(
-                "Credentials URL points at private/local address {host}. Remote access will only work if the phone can reach that network or VPN."
-              ),
+              "Credentials URL points at a private/local address. Remote access will only work if the phone can reach that network or VPN."
+                .to_string(),
             );
           }
         }
@@ -311,20 +309,18 @@ fn log_server_url_checks(
                   run_id,
                   "warn",
                   Some(step),
-                  format!(
-                    "Credentials host {host} resolves to {:?}, which does not include the SSH target IP {}.",
-                    resolved, target_ip
-                  ),
+                  "The configured credentials host does not resolve to the SSH target IP.".to_string(),
                 );
               }
             }
             Err(err) => {
+              let _ = err;
               log_line(
                 app,
                 run_id,
                 "warn",
                 Some(step),
-                format!("Could not resolve credentials host {host}: {err}"),
+                "Could not resolve the configured credentials host.".to_string(),
               );
             }
           }
@@ -337,7 +333,7 @@ fn log_server_url_checks(
         run_id,
         "warn",
         Some(step),
-        format!("Could not parse credentials URL {server_url}: {err}"),
+        format!("Could not parse the configured credentials URL: {err}"),
       );
     }
   }
