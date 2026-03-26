@@ -46,6 +46,7 @@
     key2Name: string;
     key2User: string;
     githubToken: string;
+    manifestVersionOverride: string;
     showDockerHelp: boolean;
   };
 
@@ -60,6 +61,7 @@
     key2Name: "",
     key2User: "",
     githubToken: "",
+    manifestVersionOverride: "",
     showDockerHelp: false
   };
   let devSettings: DevSettings | null = null;
@@ -309,6 +311,10 @@
       sigKeys: sigKeys.length ? sigKeys : undefined,
       binariesRepo: useDevRepo ? devSettings?.binariesRepo.trim() : undefined,
       githubToken: devSettings?.githubToken.trim() ? devSettings?.githubToken.trim() : undefined,
+      manifestVersionOverride:
+        devSettings?.enabled && devSettings?.manifestVersionOverride.trim()
+          ? devSettings.manifestVersionOverride.trim()
+          : undefined,
       overwrite: overwriteInstall
     };
 

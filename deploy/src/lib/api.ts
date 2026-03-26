@@ -34,6 +34,7 @@ export interface ServerPlan {
   sigKeys?: { name: string; githubUser: string }[];
   binariesRepo?: string;
   githubToken?: string;
+  manifestVersionOverride?: string;
 }
 
 export interface JobStart {

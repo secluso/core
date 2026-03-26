@@ -17,6 +17,7 @@
     key2Name: string;
     key2User: string;
     githubToken: string;
+    manifestVersionOverride: string;
     showDockerHelp: boolean;
   };
 
@@ -39,6 +40,7 @@
     key2Name: "",
     key2User: "",
     githubToken: "",
+    manifestVersionOverride: "",
     showDockerHelp: false
   };
 
@@ -288,6 +290,25 @@
             />
           </label>
           <p>Used for GitHub API requests to avoid rate limits.</p>
+        </section>
+
+        <section class="option-card token-card">
+          <div class="option-header">
+            <h2>Manifest Version Override</h2>
+            <span class="badge">OPTIONAL</span>
+          </div>
+
+          <label class="field">
+            <span>Version</span>
+            <input
+              bind:value={devSettings.manifestVersionOverride}
+              placeholder="0.1.0"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+            />
+          </label>
+          <p>Overrides the version sent in the post-install server health check.</p>
         </section>
       </section>
     {/if}

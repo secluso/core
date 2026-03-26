@@ -121,6 +121,7 @@ struct Artifact {
 pub struct VerifiedComponent {
     pub release_tag: String,
     pub latest_version: Version,
+    pub manifest_version: String,
     pub component_path: String,
     pub component_bytes: Vec<u8>,
     pub bundle_bytes: Vec<u8>,
@@ -468,6 +469,7 @@ pub fn download_and_verify_component(
     Ok(VerifiedComponent {
         release_tag: release.tag_name.clone(),
         latest_version,
+        manifest_version: art.version.trim().to_string(),
         component_path: target_path,
         component_bytes: target_bytes,
         bundle_bytes: zip_bytes.to_vec(),

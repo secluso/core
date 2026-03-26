@@ -70,4 +70,5 @@ pub struct ServerPlan {
   pub sig_keys: Option<Vec<SigKey>>,
   pub binaries_repo: Option<String>,
   pub github_token: Option<String>,
+  pub manifest_version_override: Option<String>,
 }

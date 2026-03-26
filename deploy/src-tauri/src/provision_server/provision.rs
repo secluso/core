@@ -15,6 +15,7 @@ use secluso_update::{
 use secluso_client_server_lib::auth::parse_user_credentials;
 use std::fs;
 use std::path::PathBuf;
+use std::thread::sleep;
 use std::time::Duration;
 use tauri::AppHandle;
 use uuid::Uuid;
@@ -26,6 +27,7 @@ const UPDATE_INTERVAL_SECS: &str = "1800";
 
 struct DownloadedArtifacts {
   release_tag: String,
+  server_manifest_version: String,
   server_bytes: Vec<u8>,
   updater_bytes: Vec<u8>,
 }
@@ -114,6 +116,7 @@ fn download_verified_artifacts(
 
   Ok(DownloadedArtifacts {
     release_tag: server_verified.release_tag,
+    server_manifest_version: server_verified.manifest_version,
     server_bytes: server_verified.component_bytes,
     updater_bytes: updater_verified.component_bytes,
   })
@@ -292,7 +295,13 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
   step_start(app, run_id, "health", "Checking public server health");
   if first_install {
     if let Some(uc) = generated_user_credentials.as_ref() {
-      verify_public_server_health(app, run_id, &plan, secrets, uc)?;
+      let probe_version = plan
+        .manifest_version_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&artifacts.server_manifest_version);
+      verify_public_server_health(app, run_id, &plan, secrets, probe_version, uc)?;
     } else {
       log_line(app, run_id, "warn", Some("health"), "Skipping public health check because generated credentials are unavailable.".to_string());
     }
@@ -309,7 +318,14 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
   Ok(())
 }
 
-fn verify_public_server_health(app: &AppHandle, run_id: Uuid, plan: &ServerPlan, secrets: &ServerSecrets, user_credentials: &[u8]) -> Result<()> {
+fn verify_public_server_health(
+  app: &AppHandle,
+  run_id: Uuid,
+  plan: &ServerPlan,
+  secrets: &ServerSecrets,
+  probe_version: &str,
+  user_credentials: &[u8],
+) -> Result<()> {
   let (username, password) = parse_user_credentials(user_credentials.to_vec()).context("Parsing generated user credentials")?;
   let status_url = format!("{}/status", secrets.server_url.trim_end_matches('/'));
   let client = Client::builder()
@@ -325,10 +341,37 @@ fn verify_public_server_health(app: &AppHandle, run_id: Uuid, plan: &ServerPlan,
     "Checking the public /status endpoint from this computer.".to_string(),
   );
 
-  let discover = client.get(&status_url).send();
+  let mut discover = None;
+  let mut last_discover_err = None;
+  for attempt in 1..=8 {
+    match client
+      .get(&status_url)
+      .header("Client-Version", probe_version)
+      .send()
+    {
+      Ok(response) => {
+        discover = Some(response);
+        break;
+      }
+      Err(err) => {
+        last_discover_err = Some(err);
+        if attempt < 8 {
+          log_line(
+            app,
+            run_id,
+            "warn",
+            Some("health"),
+            format!("Public /status probe not ready yet (attempt {attempt}/8). Retrying..."),
+          );
+          sleep(Duration::from_secs(2));
+        }
+      }
+    }
+  }
   let discover = match discover {
-    Ok(response) => response,
-    Err(err) => {
+    Some(response) => response,
+    None => {
+      let err = last_discover_err.context("Public /status probe failed without an error.")?;
       if plan.runtime.exposure_mode == "proxy" {
         bail!(
           "Secluso finished installing, but the public /status endpoint is not reachable from this computer yet: {}. Check your reverse proxy route, TLS setup, and whether it forwards to 127.0.0.1:{}.",
