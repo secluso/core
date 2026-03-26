@@ -341,11 +341,83 @@ fn verify_public_server_health(
     "Checking the public /status endpoint from this computer.".to_string(),
   );
 
+  let mut discovered_version = None;
+  probe_public_server_health(
+    &client,
+    &status_url,
+    &plan.runtime.exposure_mode,
+    plan.runtime.listen_port,
+    probe_version,
+    &username,
+    &password,
+    8,
+    Duration::from_secs(2),
+    |attempt| {
+      log_line(
+        app,
+        run_id,
+        "warn",
+        Some("health"),
+        format!("Public /status probe not ready yet (attempt {attempt}/8). Retrying..."),
+      );
+    },
+    |server_version| {
+      discovered_version = Some(server_version.to_string());
+    },
+  )?;
+
+  if let Some(server_version) = discovered_version {
+    log_line(app, run_id, "info", Some("health"), format!("Remote server version header: {server_version}"));
+  }
+
+  log_line(
+    app,
+    run_id,
+    "info",
+    Some("health"),
+    "Authenticated public health check succeeded.".to_string(),
+  );
+  Ok(())
+}
+
+fn unreachable_public_status_error(exposure_mode: &str, listen_port: u16, err: &reqwest::Error) -> anyhow::Error {
+  if exposure_mode == "proxy" {
+    anyhow::anyhow!(
+      "Secluso finished installing, but the public /status endpoint is not reachable from this computer yet: {}. Check your reverse proxy route, TLS setup, and whether it forwards to 127.0.0.1:{}.",
+      err,
+      listen_port
+    )
+  } else {
+    anyhow::anyhow!(
+      "Secluso finished installing, but the public /status endpoint is not reachable from this computer yet: {}. Check that port {} is open in the server firewall and your provider security group.",
+      err,
+      listen_port
+    )
+  }
+}
+
+fn probe_public_server_health<F, G>(
+  client: &Client,
+  status_url: &str,
+  exposure_mode: &str,
+  listen_port: u16,
+  probe_version: &str,
+  username: &str,
+  password: &str,
+  max_attempts: usize,
+  retry_delay: Duration,
+  mut on_retry: F,
+  mut on_version: G,
+) -> Result<()>
+where
+  F: FnMut(usize),
+  G: FnMut(&str),
+{
   let mut discover = None;
   let mut last_discover_err = None;
-  for attempt in 1..=8 {
+  for attempt in 1..=max_attempts {
     match client
-      .get(&status_url)
+      .get(status_url)
       .header("Client-Version", probe_version)
       .send()
     {
@@ -355,37 +427,22 @@ fn verify_public_server_health(
       }
       Err(err) => {
         last_discover_err = Some(err);
-        if attempt < 8 {
-          log_line(
-            app,
-            run_id,
-            "warn",
-            Some("health"),
-            format!("Public /status probe not ready yet (attempt {attempt}/8). Retrying..."),
-          );
-          sleep(Duration::from_secs(2));
+        if attempt < max_attempts {
+          on_retry(attempt);
+          sleep(retry_delay);
         }
       }
     }
   }
+
   let discover = match discover {
     Some(response) => response,
     None => {
       let err = last_discover_err.context("Public /status probe failed without an error.")?;
-      if plan.runtime.exposure_mode == "proxy" {
-        bail!(
-          "Secluso finished installing, but the public /status endpoint is not reachable from this computer yet: {}. Check your reverse proxy route, TLS setup, and whether it forwards to 127.0.0.1:{}.",
-          err,
-          plan.runtime.listen_port
-        );
-      }
-      bail!(
-        "Secluso finished installing, but the public /status endpoint is not reachable from this computer yet: {}. Check that port {} is open in the server firewall and your provider security group.",
-        err,
-        plan.runtime.listen_port
-      );
+      return Err(unreachable_public_status_error(exposure_mode, listen_port, &err));
     }
   };
+
   let server_version = discover
     .headers()
     .get("X-Server-Version")
@@ -395,10 +452,10 @@ fn verify_public_server_health(
   let Some(server_version) = server_version else {
     bail!("Reached the server, but it did not return X-Server-Version. This does not look like a healthy Secluso server response.");
   };
-  log_line(app, run_id, "info", Some("health"), format!("Remote server version header: {server_version}"));
+  on_version(&server_version);
 
   let auth = client
-    .get(&status_url)
+    .get(status_url)
     .header("Client-Version", &server_version)
     .basic_auth(username, Some(password))
     .send()
@@ -411,12 +468,5 @@ fn verify_public_server_health(
     );
   }
 
-  log_line(
-    app,
-    run_id,
-    "info",
-    Some("health"),
-    "Authenticated public health check succeeded.".to_string(),
-  );
   Ok(())
 }

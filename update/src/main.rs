@@ -12,9 +12,10 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use secluso_update::{
-    build_github_client, default_signers, download_and_verify_component, fetch_versioned_release,
-    get_current_version, github_token_from_env, parse_sig_keys, server_version,
-    write_current_version, Component, DEFAULT_OWNER_REPO,
+    build_github_client, default_signers, download_and_verify_component, fetch_latest_release,
+    fetch_versioned_release, get_current_version, github_token_from_env, parse_sig_keys,
+    require_release_is_immutable, server_version, write_current_version, Component,
+    DEFAULT_OWNER_REPO,
 };
 
 const USAGE: &str = r#"
@@ -50,6 +51,18 @@ struct Args {
     flag_sig_key: Vec<String>,
     flag_once: bool,
     flag_bundle_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseSource {
+    LatestImmutableGitHub,
+    ServerCoordinated,
+}
+
+#[derive(Debug, Clone)]
+struct SelectedRelease {
+    release: secluso_update::GhRelease,
+    source: ReleaseSource,
 }
 
 fn main() -> ! {
@@ -98,22 +111,6 @@ fn check_update(args: &Args) -> Result<()> {
     let current_version = get_current_version(component).unwrap_or_else(|_| Version::new(0, 0, 0));
     println!("Current Version = {current_version}");
 
-    let server_version = server_version().ok().flatten();
-    let parsed_server_version = server_version
-        .as_deref()
-        .map(|s| s.trim().trim_start_matches('v'))
-        .and_then(|s| Version::parse(s).ok());
-
-    let proceed = parsed_server_version
-        .is_some_and(|parsed_version| current_version < parsed_version);
-
-    // We don't proceed unless the server version is greater than the component version
-    if !proceed {
-        let shown_version = server_version.as_deref().unwrap_or("UNKNOWN");
-        println!("Server version is {}; update not needed yet", shown_version);
-        return Ok(());
-    }
-
     let github_token = github_token_from_env();
     let client = build_github_client(
         args.flag_github_timeout_secs,
@@ -128,9 +125,34 @@ fn check_update(args: &Args) -> Result<()> {
         args.flag_github_repo.clone()
     };
 
-    // Fetch the server's matching version release from github, so that we stay consistent.
-    let release = fetch_versioned_release(&client, &github_repo, &server_version.unwrap())?;
-    println!("Found Server Github Release Tag = {}", release.tag_name);
+    let Some(selected_release) = select_release_for_component(
+        component,
+        &current_version,
+        || fetch_latest_release(&client, &github_repo),
+        require_release_is_immutable,
+        |client_version| server_version(client_version),
+        |version| fetch_versioned_release(&client, &github_repo, version),
+    )? else {
+        return Ok(());
+    };
+
+    match selected_release.source {
+        ReleaseSource::LatestImmutableGitHub => {
+            println!(
+                "Found latest immutable GitHub release tag = {}",
+                selected_release.release.tag_name
+            );
+        }
+        ReleaseSource::ServerCoordinated => {
+            println!(
+                "Found server-coordinated release tag = {}",
+                selected_release.release.tag_name
+            );
+        }
+    };
+
+    let release = selected_release.release;
+
     if let Some(p) = &release.published_at {
         println!("Published At = {}", p);
     }
@@ -194,6 +216,65 @@ fn check_update(args: &Args) -> Result<()> {
         verified.latest_version, args.flag_component
     );
     Ok(())
+}
+
+fn select_release_for_component<
+    FLatest,
+    FRequireImmutable,
+    FServerVersion,
+    FFetchVersioned,
+>(
+    component: Component,
+    current_version: &Version,
+    fetch_latest_release_fn: FLatest,
+    require_release_is_immutable_fn: FRequireImmutable,
+    server_version_fn: FServerVersion,
+    fetch_versioned_release_fn: FFetchVersioned,
+) -> Result<Option<SelectedRelease>>
+where
+    FLatest: FnOnce() -> Result<secluso_update::GhRelease>,
+    FRequireImmutable: FnOnce(&secluso_update::GhRelease) -> Result<()>,
+    FServerVersion: FnOnce(&str) -> Result<Option<String>>,
+    FFetchVersioned: FnOnce(&str) -> Result<secluso_update::GhRelease>,
+{
+    match component {
+        Component::Server => {
+            let release = fetch_latest_release_fn()?;
+            require_release_is_immutable_fn(&release)?;
+
+            let latest_version = release.parsed_version()?;
+            if current_version >= &latest_version {
+                println!(
+                    "Latest immutable GitHub release is {}; update not needed yet",
+                    latest_version
+                );
+                return Ok(None);
+            }
+
+            Ok(Some(SelectedRelease {
+                release,
+                source: ReleaseSource::LatestImmutableGitHub,
+            }))
+        }
+        Component::Updater | Component::RaspberryCameraHub | Component::ConfigTool => {
+            let Some(server_version) = server_version_fn(&current_version.to_string())? else {
+                println!("Server version unavailable; update not needed yet");
+                return Ok(None);
+            };
+
+            let latest_version = Version::parse(server_version.trim_start_matches('v'))?;
+            if current_version >= &latest_version {
+                println!("Server version is {}; update not needed yet", latest_version);
+                return Ok(None);
+            }
+
+            let release = fetch_versioned_release_fn(&server_version)?;
+            Ok(Some(SelectedRelease {
+                release,
+                source: ReleaseSource::ServerCoordinated,
+            }))
+        }
+    }
 }
 
 // "best-effort" command runner used for service stop/start so updater can still finish installation

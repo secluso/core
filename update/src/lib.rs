@@ -34,7 +34,6 @@ pub const DEFAULT_OWNER_REPO: &str = "secluso/secluso";
 
 const MANIFEST_PATH: &str = "manifest.json";
 
-// The length of the username and password for the user credentials file.
 pub const NUM_USERNAME_CHARS: usize = 14;
 pub const NUM_PASSWORD_CHARS: usize = 14;
 
@@ -117,6 +116,16 @@ struct Artifact {
     sha256: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct StoredUserCredentials {
+    #[serde(rename = "u", alias = "username")]
+    username: String,
+    #[serde(rename = "p", alias = "password")]
+    password: String,
+    #[serde(rename = "sa", alias = "server_addr")]
+    server_addr: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct VerifiedComponent {
     pub release_tag: String,
@@ -127,35 +136,57 @@ pub struct VerifiedComponent {
     pub bundle_bytes: Vec<u8>,
 }
 
-pub fn server_version() -> Result<Option<String>> {
+pub fn server_version(client_version: &str) -> Result<Option<String>> {
     let file_path = format!("{}/{}", WORKING_DIRECTORY, "credentials_full");
+    server_version_from_path(Path::new(&file_path), client_version)
+}
 
-    let credentials_exist = fs::exists(&file_path)?;
+fn parse_credentials_full(contents: &str) -> Result<Option<(String, String, String)>> {
+    if contents.trim().is_empty() {
+        return Ok(None);
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<StoredUserCredentials>(contents) {
+        return Ok(Some((parsed.username, parsed.password, parsed.server_addr)));
+    }
+
+    if contents.len() <= NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS {
+        return Ok(None);
+    }
+
+    Ok(Some((
+        contents[0..NUM_USERNAME_CHARS].to_string(),
+        contents[NUM_USERNAME_CHARS..NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS].to_string(),
+        contents[NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS..].to_string(),
+    )))
+}
+
+fn server_version_from_path(file_path: &Path, client_version: &str) -> Result<Option<String>> {
+    let credentials_exist = fs::exists(file_path)?;
     if !credentials_exist {
         return Ok(None);
     }
 
-    let user_credentials_contents = fs::read_to_string(&file_path)?;
-    if user_credentials_contents.len() < NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS + 4 {
+    let user_credentials_contents = fs::read_to_string(file_path)?;
+    let Some((server_username, server_password, server_addr)) =
+        parse_credentials_full(&user_credentials_contents)?
+    else {
         return Ok(None);
-    }
+    };
 
-    let server_username = &user_credentials_contents[..NUM_USERNAME_CHARS - 1];
-    let server_password =
-        &user_credentials_contents[NUM_USERNAME_CHARS..NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS - 1];
-    let server_addr = &user_credentials_contents[NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS..];
-
-    let client = reqwest::blocking::Client::new();
-    let response = client
+    let response = reqwest::blocking::Client::new()
         .get(format!("{}/status", server_addr.trim_end_matches('/')))
+        .header("Client-Version", client_version)
         .basic_auth(server_username, Some(server_password))
         .send()?;
 
-    if response.status().is_success() {
-        if let Some(server_version) = response.headers().get("X-Server-Version") {
-            if let Ok(version_str) = server_version.to_str() {
-                return Ok(Some(version_str.to_string()));
-            }
+    if !(response.status().is_success() || response.status() == reqwest::StatusCode::CONFLICT) {
+        return Ok(None);
+    }
+
+    if let Some(server_version) = response.headers().get("X-Server-Version") {
+        if let Ok(version_str) = server_version.to_str() {
+            return Ok(Some(version_str.to_string()));
         }
     }
 
@@ -343,6 +374,26 @@ pub fn download_and_verify_component(
     bundle_path: Option<&str>,
     signers: &[Signer],
 ) -> Result<VerifiedComponent> {
+    download_and_verify_component_with_key_base(
+        client,
+        release,
+        component,
+        arch,
+        bundle_path,
+        signers,
+        "https://github.com",
+    )
+}
+
+fn download_and_verify_component_with_key_base(
+    client: &Client,
+    release: &GhRelease,
+    component: Component,
+    arch: &str,
+    bundle_path: Option<&str>,
+    signers: &[Signer],
+    key_base_url: &str,
+) -> Result<VerifiedComponent> {
     // Refuse mutable or unpublished releases up front. This prevents installing from states that can
     // still change after metadata is fetched.
     require_release_is_immutable(release)?;
@@ -404,7 +455,7 @@ pub fn download_and_verify_component(
         let (certs, allowed_fprs) = match key_cache.get(&signer.github_user) {
             Some(v) => v.clone(),
             None => {
-                let v = fetch_github_user_keyring(client, &signer.github_user)?;
+                let v = fetch_github_user_keyring(client, &signer.github_user, key_base_url)?;
                 key_cache.insert(signer.github_user.clone(), v.clone());
                 v
             }
@@ -488,7 +539,7 @@ fn manifest_sig_path_for(label: &str) -> String {
 // immutable=true plus non-draft/non-null published_at prevents update/install decisions from using
 // mutable pre-release states. Essentially a defense against race conditions where release assets or
 // metadata could change between discovery and installation.
-fn require_release_is_immutable(release: &GhRelease) -> Result<()> {
+pub fn require_release_is_immutable(release: &GhRelease) -> Result<()> {
     if release.draft {
         bail!(
             "Refusing update: latest release {} is a draft.",
@@ -603,8 +654,9 @@ fn read_zip_file(zip: &mut ZipArchive<Cursor<Bytes>>, path: &str) -> Result<Vec<
 fn fetch_github_user_keyring(
     client: &Client,
     user: &str,
+    key_base_url: &str,
 ) -> Result<(Vec<Cert>, HashSet<Fingerprint>)> {
-    let url = format!("https://github.com/{user}.gpg");
+    let url = format!("{}/{}.gpg", key_base_url.trim_end_matches('/'), user);
     let body = client.get(&url).send()?.error_for_status()?.bytes()?;
 
     let mut certs = Vec::new();
