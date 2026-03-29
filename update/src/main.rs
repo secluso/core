@@ -138,24 +138,14 @@ fn check_update(args: &Args) -> Result<()> {
 
     match selected_release.source {
         ReleaseSource::LatestImmutableGitHub => {
-            println!(
-                "Found latest immutable GitHub release tag = {}",
-                selected_release.release.tag_name
-            );
+            println!("Using the latest immutable GitHub release.");
         }
         ReleaseSource::ServerCoordinated => {
-            println!(
-                "Found server-coordinated release tag = {}",
-                selected_release.release.tag_name
-            );
+            println!("Using the server-coordinated release.");
         }
     };
 
     let release = selected_release.release;
-
-    if let Some(p) = &release.published_at {
-        println!("Published At = {}", p);
-    }
 
     // download_and_verify_component performs the full cryptographic verification pipeline and returns
     // only authenticated component bytes. allows focus below on atomic file placement.
@@ -211,10 +201,7 @@ fn check_update(args: &Args) -> Result<()> {
     // Persist version only after install has succeeded. Acts to gate future update checks (via the marker).
     write_current_version(component, verified.latest_version.clone())?;
 
-    println!(
-        "Updated to version {} (component={})",
-        verified.latest_version, args.flag_component
-    );
+    println!("Update completed successfully (component={})", args.flag_component);
     Ok(())
 }
 
@@ -244,10 +231,7 @@ where
 
             let latest_version = release.parsed_version()?;
             if current_version >= &latest_version {
-                println!(
-                    "Latest immutable GitHub release is {}; update not needed yet",
-                    latest_version
-                );
+                println!("Already on the latest immutable GitHub release.");
                 return Ok(None);
             }
 
@@ -264,7 +248,7 @@ where
 
             let latest_version = Version::parse(server_version.trim_start_matches('v'))?;
             if current_version >= &latest_version {
-                println!("Server version is {}; update not needed yet", latest_version);
+                println!("Already on the server-coordinated release.");
                 return Ok(None);
             }
 
