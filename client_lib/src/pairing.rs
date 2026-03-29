@@ -2,20 +2,26 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::fs;
 use openmls::prelude::KeyPackage;
 use serde::{Deserialize, Serialize};
 use qrcode::QrCode;
 use image::Luma;
 use std::fs::create_dir;
 use std::io::Write;
-use anyhow::Context;
+use std::path::Path;
+use anyhow::{anyhow, Context};
 
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
+use rand::distributions::Uniform;
+use rand::{Rng, thread_rng};
+
 
 pub const NUM_SECRET_BYTES: usize = 72;
 pub const CAMERA_SECRET_VERSION: &str = "v1.1";
+const WIFI_PASSWORD_LEN: usize = 10;
 
 // We version the QR code, store secret bytes as well (base64-url-encoded) as the Wi-Fi passphrase for Raspberry Pi cameras.
 // Versioned QR codes can be helpful to ensure compatibility.
@@ -29,6 +35,9 @@ pub struct CameraSecret {
     // But this shouldn't be "s" to maintain separation from the user credentials qr code
     #[serde(rename = "cs", alias = "secret")]
     pub secret: String,
+
+    #[serde(rename = "wp", alias = "wiif_password")]
+    pub wifi_password: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -63,6 +72,7 @@ pub fn generate_ip_camera_secret(camera_name: &str) -> anyhow::Result<Vec<u8>> {
     let camera_secret = CameraSecret {
         version: CAMERA_SECRET_VERSION.to_string(),
         secret: base64_url::encode(&secret),
+        wifi_password: None,
     };
 
     let writeable_secret = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
@@ -79,33 +89,76 @@ pub fn generate_ip_camera_secret(camera_name: &str) -> anyhow::Result<Vec<u8>> {
     Ok(secret)
 }
 
-pub fn generate_raspberry_camera_secret(dir: String) -> anyhow::Result<()> {
+fn generate_wifi_password(dir: &Path) -> anyhow::Result<String> {
+    // Generate the randomized WiFi password
+    let wifi_password = generate_random(WIFI_PASSWORD_LEN, false); //10 characters that are upper/low alphanumeric
+    fs::File::create(dir.join("wifi_password")).context("Could not create wifi_password file")?;
+
+    fs::write(dir.join("wifi_password"), wifi_password.clone()).with_context(|| format!("Could not create {}", dir.display()))?;
+
+    Ok(wifi_password)
+}
+
+pub fn generate_random(num_chars: usize, special_characters: bool) -> String {
+    // We exclude : because that character has a special use in the http(s) auth header.
+    // We exclude / because that character is used within the Linux file system
+    let charset: &[u8] = if special_characters {
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                           abcdefghijklmnopqrstuvwxyz\
+                           0123456789\
+                           !@#$%^&*()-_=+[]{}|;,.<>?"
+    } else {
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                           abcdefghijklmnopqrstuvwxyz\
+                           0123456789"
+    };
+
+    let mut rng = thread_rng();
+    (0..num_chars)
+        .map(|_| {
+            let idx = rng.sample(Uniform::new(0, charset.len()));
+            charset[idx] as char
+        })
+        .collect()
+}
+
+pub fn generate_raspberry_camera_secret(dir: &Path, error_on_folder_exist: bool) -> anyhow::Result<()> {
+    // If it already exists and we don't want to try re-generating credentials..
+    if dir.exists() && error_on_folder_exist {
+        return Err(anyhow!("The directory exists!"));
+    }
+
+    // Create the directory if it doesn't exist
+    if !dir.exists() {
+         create_dir(dir)?;
+    }
+
     let crypto = OpenMlsRustCrypto::default();
     let secret = crypto
         .crypto()
         .random_vec(NUM_SECRET_BYTES).context("Failed to generate camera secret bytes")?;
 
+    let wifi_password = generate_wifi_password(dir)?;
     let camera_secret = CameraSecret {
         version: CAMERA_SECRET_VERSION.to_string(),
         secret: base64_url::encode(&secret),
+        wifi_password: Some(wifi_password),
     };
 
-    let writeable_secret = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
-
-    // Create the directory if it doesn't exist
-    create_dir(dir.clone()).context("Failed to create directory (it may already exist)")?;
+    let qr_content = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
 
     // Save in a file to be given to the camera
     // The camera secret does not need to be versioned. We're not worried about the formatting ever changing.
+    // Just put the secret by itself in this file.
     let mut file =
-        std::fs::File::create(dir.clone() + "/camera_secret").context("Could not create file")?;
+        std::fs::File::create(dir.join("camera_secret")).context("Could not create file")?;
     file.write_all(&secret).context("Failed to write camera secret data to file")?;
 
-    // Save as QR code to be shown to the app
-    let code = QrCode::new(writeable_secret.clone()).context("Failed to generate QR code from camera secret bytes")?;
+    // Save as QR code to be shown to the app (with secret + version + wifi password)
+    let code = QrCode::new(qr_content.clone()).context("Failed to generate QR code from camera secret bytes")?;
     let image = code.render::<Luma<u8>>().build();
     image
-        .save(dir.clone() + "/camera_secret_qrcode.png").context("Failed to save QR code image")?;
+        .save(dir.join("camera_secret_qrcode.png")).context("Failed to save QR code image")?;
 
     Ok(())
 }

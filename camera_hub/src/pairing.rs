@@ -128,6 +128,13 @@ pub fn get_input_camera_secret() -> Vec<u8> {
     data.to_vec()
 }
 
+// Read the WiFi password contents from file to use for the hotspot
+pub fn get_input_wifi_password() -> String {
+    let pathname = "./wifi_password";
+    let contents = fs::read_to_string(pathname).expect("Failed to read from \"wifi_password\" file. You can generate this in config tool");
+    return contents;
+}
+
 fn invite(
     stream: &mut TcpStream,
     mls_client: &mut MlsClient,
@@ -489,7 +496,7 @@ pub fn create_wifi_hotspot() {
     // less fragile than shell parsing to use argv
     let _ = Command::new("nmcli")
         .args([
-            "device", "wifi", "hotspot", "ssid", "Secluso", "password", "12345678",
+            "device", "wifi", "hotspot", "ssid", "Secluso", "password", get_input_wifi_password().as_str(),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

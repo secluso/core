@@ -33,10 +33,11 @@ anyhow = "1"
 tempfile = "3"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-toml = "1.0"
+toml = "1.1"
 secluso-update = { path = "../../update" }
+secluso-client-lib = { path = "../../client_lib" }
 secluso-client-server-lib = { path = "../../client_server_lib" }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"] }
 url = "2"
 image = "0.25.10"
 qrcode = "0.14.1"

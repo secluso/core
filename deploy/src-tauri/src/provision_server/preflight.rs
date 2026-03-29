@@ -1,15 +1,31 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::provision_server::events::log_line;
+use crate::provision_server::ssh::sudo_prefix;
 use crate::provision_server::types::{ServerRuntimePlan, SshAuth, SshTarget};
 use anyhow::{bail, Context, Result};
+use reqwest::blocking::Client;
 use ssh2::Session;
 use std::io::{Read, Write};
+use std::thread::sleep;
+use std::time::Duration;
 use tauri::AppHandle;
+use url::Url;
 use uuid::Uuid;
 
 pub const DEFAULT_SERVER_HTTP_PORT: u16 = 8000;
 const MIN_DISK_KB: u64 = 3 * 1024 * 1024;
 const WARN_MEM_KB: u64 = 768 * 1024;
+const PUBLIC_PROBE_ATTEMPTS: usize = 2;
+const PUBLIC_PROBE_RETRY_DELAY: Duration = Duration::from_secs(1);
+const PUBLIC_PROBE_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
+const REMOTE_HTTPS_PROBE_MAX_TIME_SECS: u64 = 3;
+const REMOTE_PROBE_START_TIMEOUT_SECS: u64 = 8;
+
+struct TempHttpProbe {
+  unit_name: String,
+  root_dir: String,
+  uses_sudo: bool,
+}
 
 pub struct PreflightReport {
   pub remote_has_bin: bool,
@@ -34,6 +50,7 @@ pub fn run_preflight(
   sess: &Session,
   target: &SshTarget,
   runtime: Option<&ServerRuntimePlan>,
+  public_server_url: Option<&str>,
 ) -> Result<PreflightReport> {
   log_line(app, run_id, "info", Some(step), "Starting server preflight checks.");
 
@@ -185,6 +202,16 @@ pub fn run_preflight(
   }
 
   let listen_port = runtime.map(|value| value.listen_port).unwrap_or(DEFAULT_SERVER_HTTP_PORT);
+  let removed_stale_probe = cleanup_stale_preflight_port_listener(app, run_id, step, sess, target, listen_port)?;
+  if removed_stale_probe {
+    log_line(
+      app,
+      run_id,
+      "info",
+      Some(step),
+      format!("Removed a stale temporary preflight listener from port {listen_port} before re-checking the port."),
+    );
+  }
   let port_probe = remote_with_optional_sudo(
     sess,
     target,
@@ -198,13 +225,45 @@ pub fn run_preflight(
     .filter(|line| !line.is_empty())
     .collect::<Vec<_>>();
   let port_in_use = !port_lines.is_empty();
+  let mut occupied_by_secluso =
+    port_probe.stdout.contains("secluso-server")
+      || port_probe.stdout.contains("/opt/secluso/bin/secluso-server")
+      || service_active;
   if port_in_use {
     for line in &port_lines {
       log_line(app, run_id, "warn", Some(step), format!("Port {listen_port} listener: {line}"));
     }
-    let occupied_by_secluso = port_probe.stdout.contains("secluso-server") || remote_has_bin || remote_has_unit;
     if !occupied_by_secluso {
-      bail!("Port {listen_port} is already in use by another service. Automatic Secluso installs expect the selected listen port to be free.");
+      if let Some(status_url) = direct_status_url_for_preflight(runtime, public_server_url, listen_port)? {
+        match verify_existing_secluso_status_endpoint(app, run_id, step, status_url.as_ref()) {
+          Ok(()) => {
+            occupied_by_secluso = true;
+            log_line(
+              app,
+              run_id,
+              "info",
+              Some(step),
+              format!("Port {listen_port} is already serving a healthy Secluso endpoint."),
+            );
+          }
+          Err(err) => {
+            log_line(
+              app,
+              run_id,
+              "warn",
+              Some(step),
+              format!("Port {listen_port} is in use, and the existing listener did not look like a healthy Secluso endpoint: {err:#}"),
+            );
+          }
+        }
+      }
+    }
+
+    if !occupied_by_secluso {
+      bail!(
+        "Port {listen_port} is already in use by another service or stale listener. Listener details: {}",
+        port_lines.join(" | ")
+      );
     }
     log_line(
       app,
@@ -218,6 +277,17 @@ pub fn run_preflight(
   }
 
   check_firewall(app, run_id, step, sess, runtime)?;
+  verify_public_http_reachability(
+    app,
+    run_id,
+    step,
+    sess,
+    target,
+    runtime,
+    public_server_url,
+    port_in_use,
+    occupied_by_secluso,
+  )?;
 
   Ok(PreflightReport {
     remote_has_bin,
@@ -228,6 +298,78 @@ pub fn run_preflight(
     remote_has_credentials_full,
     remote_arch,
   })
+}
+
+fn cleanup_stale_preflight_port_listener(
+  app: &AppHandle,
+  run_id: Uuid,
+  step: &str,
+  sess: &Session,
+  target: &SshTarget,
+  listen_port: u16,
+) -> Result<bool> {
+  let probe = remote_with_optional_sudo(
+    sess,
+    target,
+    &format!("ss -ltnpH | awk '$4 ~ /:{}$/ {{print}}'", listen_port),
+    &format!("ss -ltnH | awk '$4 ~ /:{}$/ {{print}}'", listen_port),
+  )?;
+  let pids = extract_listener_pids(&probe.stdout);
+  if pids.is_empty() {
+    return Ok(false);
+  }
+
+  let mut removed_any = false;
+  for pid in pids {
+    let inspect_cmd = format!(
+      "cwd=$(readlink -f /proc/{pid}/cwd 2>/dev/null || true)\n\
+cmd=$(tr '\\0' ' ' </proc/{pid}/cmdline 2>/dev/null || true)\n\
+printf 'CWD=%s\\nCMD=%s\\n' \"$cwd\" \"$cmd\""
+    );
+    let inspect = remote_with_optional_sudo(sess, target, &inspect_cmd, &inspect_cmd)?;
+    if inspect.exit != 0 {
+      continue;
+    }
+
+    let cwd = parse_prefixed_output_field(&inspect.stdout, "CWD=").unwrap_or_default();
+    let cmd = parse_prefixed_output_field(&inspect.stdout, "CMD=").unwrap_or_default();
+    let is_stale_probe = looks_like_stale_preflight_listener(&cwd, &cmd, listen_port);
+    if !is_stale_probe {
+      continue;
+    }
+
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      format!("Stopping stale preflight helper on port {listen_port} (pid {pid})."),
+    );
+
+    let cleanup_cmd = format!(
+      "kill {pid} >/dev/null 2>&1 || true\n\
+if [ -n '{cwd}' ] && [ -d '{cwd}' ]; then rm -rf '{cwd}'; fi",
+      cwd = shell_escape(&cwd)
+    );
+    let cleanup = remote_with_optional_sudo(sess, target, &cleanup_cmd, &cleanup_cmd)?;
+    if cleanup.exit != 0 {
+      log_line(
+        app,
+        run_id,
+        "warn",
+        Some(step),
+        format!(
+          "Failed to fully clean up stale preflight helper pid {pid}. {}",
+          summarize_remote_failure(&cleanup)
+        ),
+      );
+      continue;
+    }
+
+    removed_any = true;
+  }
+
+  Ok(removed_any)
 }
 
 fn verify_sudo_access(app: &AppHandle, run_id: Uuid, step: &str, sess: &Session, target: &SshTarget) -> Result<()> {
@@ -262,6 +404,365 @@ fn verify_sudo_access(app: &AppHandle, run_id: Uuid, step: &str, sess: &Session,
   }
   log_line(app, run_id, "info", Some(step), format!("Verified sudo access using {mode_label}."));
   Ok(())
+}
+
+fn verify_public_http_reachability(
+  app: &AppHandle,
+  run_id: Uuid,
+  step: &str,
+  sess: &Session,
+  target: &SshTarget,
+  runtime: Option<&ServerRuntimePlan>,
+  public_server_url: Option<&str>,
+  port_in_use: bool,
+  existing_secluso_listener: bool,
+) -> Result<()> {
+  let exposure_mode = runtime.map(|value| value.exposure_mode.as_str()).unwrap_or("direct");
+  let listen_port = runtime.map(|value| value.listen_port).unwrap_or(DEFAULT_SERVER_HTTP_PORT);
+  let bind_address = runtime.map(|value| value.bind_address.as_str()).unwrap_or("0.0.0.0");
+
+  if exposure_mode != "direct" {
+    log_line(
+      app,
+      run_id,
+      "info",
+      Some(step),
+      "Skipping public port probe during preflight because reverse proxy mode is selected.".to_string(),
+    );
+    return Ok(());
+  }
+
+  let Some(public_server_url) = public_server_url.map(str::trim).filter(|value| !value.is_empty()) else {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      "Skipping public port probe during preflight because no public URL was provided.".to_string(),
+    );
+    return Ok(());
+  };
+
+  let base_url = prepare_direct_probe_base_url(public_server_url, listen_port)?;
+
+  if port_in_use {
+    if existing_secluso_listener {
+      let status_url = base_url.join("status").context("Preparing preflight /status probe URL")?;
+      log_line(
+        app,
+        run_id,
+        "info",
+        Some(step),
+        format!(
+          "Port {listen_port} is already serving Secluso. Reusing its public /status endpoint for reachability preflight."
+        ),
+      );
+      verify_existing_secluso_status_endpoint(app, run_id, step, status_url.as_ref())?;
+      return Ok(());
+    }
+
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      format!(
+        "Skipping temporary public port probe because port {listen_port} is already in use and the Secluso service is not active."
+      ),
+    );
+    return Ok(());
+  }
+
+  let probe_token = format!("secluso-preflight-{}", Uuid::new_v4());
+  log_line(
+    app,
+    run_id,
+    "info",
+    Some(step),
+    format!("Starting a temporary public probe on port {listen_port}."),
+  );
+  let probe = match start_temp_http_probe(sess, target, listen_port, bind_address, &probe_token)? {
+    Some(value) => value,
+    None => {
+      log_line(
+        app,
+        run_id,
+        "warn",
+        Some(step),
+        "Skipping public port probe because no temporary HTTP probe helper (python3 or busybox) is available on the server.".to_string(),
+      );
+      return Ok(());
+    }
+  };
+
+  let probe_url = base_url
+    .join("secluso-preflight-probe.txt")
+    .context("Preparing temporary HTTP probe URL")?;
+
+  log_line(
+    app,
+    run_id,
+    "info",
+    Some(step),
+    format!(
+      "Checking whether {} is reachable from this computer.",
+      base_url.as_str().trim_end_matches('/')
+    ),
+  );
+
+  let probe_result = probe_public_demo_endpoint(probe_url.as_ref(), &probe_token, listen_port);
+  if let Err(err) = stop_temp_http_probe(sess, target, &probe) {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      format!("Temporary public probe cleanup warning: {err:#}"),
+    );
+  }
+  probe_result?;
+
+  log_line(
+    app,
+    run_id,
+    "info",
+    Some(step),
+    format!("Public port probe succeeded on TCP port {listen_port}."),
+  );
+  Ok(())
+}
+
+fn prepare_direct_probe_base_url(public_server_url: &str, listen_port: u16) -> Result<Url> {
+  let parsed = Url::parse(public_server_url)
+    .with_context(|| format!("Public URL '{public_server_url}' is not a valid URL for direct-mode preflight."))?;
+
+  if parsed.scheme() != "http" {
+    bail!(
+      "Direct mode must use an http:// public URL during preflight. Received '{}'.",
+      public_server_url
+    );
+  }
+
+  if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+    bail!(
+      "Direct mode public URL must be a plain host or host:port without a path, query, or fragment. Received '{}'.",
+      public_server_url
+    );
+  }
+
+  let effective_port = parsed.port_or_known_default().unwrap_or(80);
+  if effective_port != listen_port {
+    bail!(
+      "Direct mode public URL port {} does not match the configured Secluso listen port {}.",
+      effective_port,
+      listen_port
+    );
+  }
+
+  Ok(parsed)
+}
+
+fn verify_existing_secluso_status_endpoint(app: &AppHandle, run_id: Uuid, step: &str, status_url: &str) -> Result<()> {
+  let client = Client::builder()
+    .timeout(PUBLIC_PROBE_HTTP_TIMEOUT)
+    .build()
+    .context("Creating HTTP client for preflight reachability check")?;
+
+  let response = client
+    .get(status_url)
+    .send()
+    .with_context(|| format!("Existing Secluso /status endpoint is not reachable from this computer at {status_url}"))?;
+
+  let server_version = response
+    .headers()
+    .get("X-Server-Version")
+    .and_then(|value| value.to_str().ok())
+    .map(str::to_string);
+
+  let Some(server_version) = server_version else {
+    bail!(
+      "Reached {}, but it did not return X-Server-Version. This does not look like a healthy Secluso /status response.",
+      status_url
+    );
+  };
+
+  log_line(
+    app,
+    run_id,
+    "info",
+    Some(step),
+    format!("Existing public Secluso /status endpoint is reachable (X-Server-Version: {server_version})."),
+  );
+  Ok(())
+}
+
+fn start_temp_http_probe(
+  sess: &Session,
+  target: &SshTarget,
+  listen_port: u16,
+  bind_address: &str,
+  probe_token: &str,
+) -> Result<Option<TempHttpProbe>> {
+  let uses_sudo = target.user != "root";
+  let unit_name = format!("secluso-preflight-http-{}", Uuid::new_v4().simple());
+  let inner_start_cmd = format!(
+    "set -eu\n\
+probe_root=\"$(mktemp -d /tmp/secluso-preflight-http.XXXXXX)\"\n\
+printf '%s\\n' '{probe_token}' > \"$probe_root/secluso-preflight-probe.txt\"\n\
+if ! command -v systemd-run >/dev/null 2>&1; then\n\
+  echo 'SECLUSO_HTTP_PROBE_SYSTEMD_RUN_MISSING' >&2\n\
+  exit 126\n\
+fi\n\
+if command -v python3 >/dev/null 2>&1; then\n\
+  helper_cmd=\"cd '$probe_root' && exec python3 -m http.server {listen_port} --bind '{bind_address}' >> '$probe_root/server.log' 2>&1\"\n\
+elif command -v busybox >/dev/null 2>&1; then\n\
+  helper_cmd=\"exec busybox httpd -f -p '{bind_address}:{listen_port}' -h '$probe_root' >> '$probe_root/server.log' 2>&1\"\n\
+else\n\
+  echo 'SECLUSO_HTTP_PROBE_HELPER_MISSING' >&2\n\
+  exit 127\n\
+fi\n\
+systemd-run --quiet --unit '{unit_name}' bash -lc \"$helper_cmd\"\n\
+sleep 1\n\
+if ! systemctl is-active --quiet '{unit_name}'; then\n\
+  systemctl status '{unit_name}' --no-pager >/dev/null 2>&1 || true\n\
+  exit 125\n\
+fi\n\
+printf 'UNIT=%s\\nROOT=%s\\n' '{unit_name}' \"$probe_root\""
+  );
+  let start_cmd = format!(
+    "if command -v timeout >/dev/null 2>&1; then timeout {REMOTE_PROBE_START_TIMEOUT_SECS}s bash -lc '{}'; else bash -lc '{}'; fi",
+    shell_escape(&inner_start_cmd),
+    shell_escape(&inner_start_cmd)
+  );
+  let result = remote_shell_for_probe(sess, target, &start_cmd, uses_sudo)?;
+
+  if result.exit == 127 && result.stderr.contains("SECLUSO_HTTP_PROBE_HELPER_MISSING") {
+    return Ok(None);
+  }
+  if result.exit == 126 && result.stderr.contains("SECLUSO_HTTP_PROBE_SYSTEMD_RUN_MISSING") {
+    return Ok(None);
+  }
+  if result.exit == 124 {
+    bail!(
+      "Timed out while starting the temporary HTTP probe on port {listen_port}. The remote helper did not detach cleanly within {} seconds.",
+      REMOTE_PROBE_START_TIMEOUT_SECS
+    );
+  }
+  if result.exit != 0 {
+    bail!(
+      "Failed to start a temporary HTTP probe on port {listen_port}. {}",
+      summarize_remote_failure(&result)
+    );
+  }
+
+  let unit_name = result
+    .stdout
+    .lines()
+    .find_map(|line| line.strip_prefix("UNIT="))
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .context("Temporary HTTP probe did not report its systemd unit.")?;
+  let root_dir = result
+    .stdout
+    .lines()
+    .find_map(|line| line.strip_prefix("ROOT="))
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .context("Temporary HTTP probe did not report its temp directory.")?;
+
+  Ok(Some(TempHttpProbe { unit_name, root_dir, uses_sudo }))
+}
+
+fn stop_temp_http_probe(sess: &Session, target: &SshTarget, probe: &TempHttpProbe) -> Result<()> {
+  let stop_cmd = format!(
+    "systemctl stop '{}' >/dev/null 2>&1 || true\n\
+systemctl reset-failed '{}' >/dev/null 2>&1 || true\n\
+rm -rf '{}'",
+    shell_escape(&probe.unit_name),
+    shell_escape(&probe.unit_name),
+    shell_escape(&probe.root_dir)
+  );
+  let result = remote_shell_for_probe(sess, target, &stop_cmd, probe.uses_sudo)?;
+  if result.exit != 0 {
+    bail!("Temporary HTTP probe cleanup failed. {}", summarize_remote_failure(&result));
+  }
+  Ok(())
+}
+
+fn probe_public_demo_endpoint(probe_url: &str, probe_token: &str, listen_port: u16) -> Result<()> {
+  let client = Client::builder()
+    .timeout(PUBLIC_PROBE_HTTP_TIMEOUT)
+    .build()
+    .context("Creating HTTP client for public port probe")?;
+  let probe_display_url = Url::parse(probe_url)
+    .ok()
+    .map(|url| {
+      let mut trimmed = url.clone();
+      trimmed.set_path("");
+      trimmed.set_query(None);
+      trimmed.set_fragment(None);
+      trimmed.to_string().trim_end_matches('/').to_string()
+    })
+    .unwrap_or_else(|| probe_url.to_string());
+  let probe_timeout_budget_secs =
+    (PUBLIC_PROBE_ATTEMPTS as u64 * PUBLIC_PROBE_HTTP_TIMEOUT.as_secs())
+      + ((PUBLIC_PROBE_ATTEMPTS.saturating_sub(1)) as u64 * PUBLIC_PROBE_RETRY_DELAY.as_secs());
+
+  let mut last_error = None;
+  for attempt in 1..=PUBLIC_PROBE_ATTEMPTS {
+    match client.get(probe_url).send() {
+      Ok(response) => {
+        let status = response.status();
+        let body = response
+          .text()
+          .with_context(|| format!("Reading HTTP probe response body from {probe_url}"))?;
+        if status.is_success() && body.contains(probe_token) {
+          return Ok(());
+        }
+
+        last_error = Some(anyhow::anyhow!(
+          "Reached {}, but the response did not match the expected temporary probe (HTTP {}).",
+          probe_url,
+          status
+        ));
+      }
+      Err(err) => {
+        last_error = Some(anyhow::anyhow!(
+          "Could not reach the temporary public probe at {} from this computer within about {} seconds: {}. Check that TCP port {} is open in the server firewall, cloud security group, and any home-router port forwarding rules.",
+          probe_display_url,
+          probe_timeout_budget_secs,
+          err,
+          listen_port
+        ));
+      }
+    }
+
+    if attempt < PUBLIC_PROBE_ATTEMPTS {
+      sleep(PUBLIC_PROBE_RETRY_DELAY);
+    }
+  }
+
+  Err(last_error.context("Public HTTP probe failed without an error.")?)
+}
+
+fn direct_status_url_for_preflight(
+  runtime: Option<&ServerRuntimePlan>,
+  public_server_url: Option<&str>,
+  listen_port: u16,
+) -> Result<Option<Url>> {
+  let exposure_mode = runtime.map(|value| value.exposure_mode.as_str()).unwrap_or("direct");
+  if exposure_mode != "direct" {
+    return Ok(None);
+  }
+
+  let Some(public_server_url) = public_server_url.map(str::trim).filter(|value| !value.is_empty()) else {
+    return Ok(None);
+  };
+
+  let base_url = prepare_direct_probe_base_url(public_server_url, listen_port)?;
+  Ok(Some(base_url.join("status").context("Preparing preflight /status probe URL")?))
 }
 
 fn verify_outbound_network(app: &AppHandle, run_id: Uuid, step: &str, sess: &Session) -> Result<()> {
@@ -299,7 +800,10 @@ fn verify_outbound_network(app: &AppHandle, run_id: Uuid, step: &str, sess: &Ses
     ),
   ];
   for (url, warning) in https_checks {
-    let probe = format!("if command -v curl >/dev/null 2>&1; then curl -fsSI --max-time 10 {url} >/dev/null; else exit 42; fi");
+    let probe = format!(
+      "if command -v curl >/dev/null 2>&1; then curl -fsSI --connect-timeout {timeout} --max-time {timeout} {url} >/dev/null; else exit 42; fi",
+      timeout = REMOTE_HTTPS_PROBE_MAX_TIME_SECS
+    );
     let result = remote_shell(sess, &probe, None)?;
     match result.exit {
       0 => log_line(app, run_id, "info", Some(step), format!("Outbound HTTPS to {url} succeeded.")),
@@ -390,6 +894,51 @@ fn parse_u64_field(raw: &str, label: &str) -> Result<u64> {
     .with_context(|| format!("Failed to parse {label} from '{raw}'"))
 }
 
+fn parse_prefixed_output_field(contents: &str, prefix: &str) -> Option<String> {
+  contents
+    .lines()
+    .find_map(|line| line.strip_prefix(prefix))
+    .map(str::trim)
+    .map(str::to_string)
+}
+
+fn looks_like_stale_preflight_listener(cwd: &str, cmd: &str, listen_port: u16) -> bool {
+  if cwd.starts_with("/tmp/secluso-preflight-http.") || cmd.contains("/tmp/secluso-preflight-http.") {
+    return true;
+  }
+
+  let python_pattern = format!("-m http.server {listen_port}");
+  if cmd.contains("python3") && cmd.contains(&python_pattern) {
+    return true;
+  }
+
+  let busybox_pattern = format!(":{listen_port}");
+  if cmd.contains("busybox httpd") && cmd.contains(&busybox_pattern) {
+    return true;
+  }
+
+  false
+}
+
+fn extract_listener_pids(contents: &str) -> Vec<String> {
+  let mut out = Vec::new();
+  for line in contents.lines() {
+    let mut rest = line;
+    while let Some(idx) = rest.find("pid=") {
+      let after = &rest[idx + 4..];
+      let pid = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>();
+      if !pid.is_empty() && !out.iter().any(|existing| existing == &pid) {
+        out.push(pid.clone());
+      }
+      rest = &after[pid.len()..];
+    }
+  }
+  out
+}
+
 fn shell_escape(cmd: &str) -> String {
   cmd.replace('\'', r"'\''")
 }
@@ -416,12 +965,27 @@ fn remote_with_optional_sudo(sess: &Session, target: &SshTarget, sudo_cmd: &str,
         remote_shell(sess, sudo_cmd, Some(&format!("{password}\n")))
       }
       _ => {
-        let res = remote_shell(sess, "sudo -n ss -ltnpH | awk '$4 ~ /:8000$/ {print}'", None)?;
+        let res = remote_shell(sess, &format!("sudo -n {sudo_cmd}"), None)?;
         if res.exit == 0 { Ok(res) } else { remote_shell(sess, fallback_cmd, None) }
       }
     },
     _ => remote_shell(sess, fallback_cmd, None),
   }
+}
+
+fn remote_shell_for_probe(sess: &Session, target: &SshTarget, cmd: &str, uses_sudo: bool) -> Result<ExecResult> {
+  if !uses_sudo {
+    return remote_shell(sess, cmd, None);
+  }
+
+  let (sudo_cmd, sudo_pw) = sudo_prefix(target);
+  if sudo_cmd.is_empty() {
+    return remote_shell(sess, cmd, None);
+  }
+
+  let wrapped = format!("{sudo_cmd} bash -lc '{}'", shell_escape(cmd));
+  let stdin = sudo_pw.map(|value| format!("{value}\n"));
+  remote_shell(sess, &wrapped, stdin.as_deref())
 }
 
 fn remote_shell(sess: &Session, cmd: &str, stdin: Option<&str>) -> Result<ExecResult> {

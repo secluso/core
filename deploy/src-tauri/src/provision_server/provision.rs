@@ -136,8 +136,18 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
   let (sudo_cmd, sudo_pw) = sudo_prefix(&target);
 
   step_start(app, run_id, "preflight", "Checking server compatibility");
-  let preflight = run_preflight(app, run_id, "preflight", &sess, &target, Some(&plan.runtime))?;
+  let preflight = run_preflight(
+    app,
+    run_id,
+    "preflight",
+    &sess,
+    &target,
+    Some(&plan.runtime),
+    plan.secrets.as_ref().map(|value| value.server_url.as_str()),
+  )?;
   step_ok(app, run_id, "preflight");
+
+  cleanup_preflight_helpers(app, run_id, &sess, &sudo_cmd, sudo_pw.as_deref())?;
 
   // detect remote state
   step_start(app, run_id, "detect", "Detecting remote install state");
@@ -315,6 +325,54 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
     );
   }
   step_ok(app, run_id, "health");
+  Ok(())
+}
+
+fn cleanup_preflight_helpers(
+  app: &AppHandle,
+  run_id: Uuid,
+  sess: &ssh2::Session,
+  sudo_cmd: &str,
+  sudo_pw: Option<&str>,
+) -> Result<()> {
+  let systemctl_prefix = if sudo_cmd.is_empty() {
+    "systemctl".to_string()
+  } else {
+    format!("{sudo_cmd} systemctl")
+  };
+  let shell_prefix = if sudo_cmd.is_empty() {
+    "".to_string()
+  } else {
+    format!("{sudo_cmd} ")
+  };
+
+  let script = format!(
+    "set +e\n\
+if command -v systemctl >/dev/null 2>&1; then\n\
+  units=\"$({systemctl_prefix} list-units --all --plain --no-legend 'secluso-preflight-http-*' 2>/dev/null | awk '{{print $1}}')\"\n\
+  if [ -n \"$units\" ]; then\n\
+    while IFS= read -r unit; do\n\
+      [ -z \"$unit\" ] && continue\n\
+      {systemctl_prefix} stop \"$unit\" >/dev/null 2>&1 || true\n\
+      {systemctl_prefix} reset-failed \"$unit\" >/dev/null 2>&1 || true\n\
+    done <<'EOF'\n\
+$units\n\
+EOF\n\
+  fi\n\
+fi\n\
+{shell_prefix}rm -rf /tmp/secluso-preflight-http.* >/dev/null 2>&1 || true\n\
+exit 0\n"
+  );
+
+  exec_remote_script_streaming(
+    app,
+    run_id,
+    "preflight",
+    sess,
+    &[],
+    sudo_pw.map(str::to_string),
+    &script,
+  )?;
   Ok(())
 }
 

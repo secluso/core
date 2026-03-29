@@ -5,6 +5,7 @@
   import { goto } from "$app/navigation";
   import { browser } from "$app/environment";
   import { buildImage, checkDocker, checkRequirements, openExternalUrl, type RequirementStatus } from "$lib/api";
+  import { maskDemoText } from "$lib/demoDisplay";
 
   // variants data model
   type VariantKey = "official" | "diy";
@@ -48,6 +49,7 @@
     key2User: string;
     githubToken: string;
     showDockerHelp: boolean;
+    maskUserPathsWithDemo: boolean;
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
@@ -82,7 +84,8 @@
     key2Name: "",
     key2User: "",
     githubToken: "",
-    showDockerHelp: false
+    showDockerHelp: false,
+    maskUserPathsWithDemo: false
   };
 
   // progress state
@@ -267,7 +270,8 @@
           key2Name: "",
           key2User: "",
           githubToken: "",
-          showDockerHelp: false
+          showDockerHelp: false,
+          maskUserPathsWithDemo: false
         };
     }
   });
@@ -380,7 +384,7 @@
         </div>
         <div class="output-picker">
           <div class="output-input">
-            <input readonly placeholder={imageOutputPlaceholder} bind:value={imageOutputPath} />
+            <input readonly placeholder={imageOutputPlaceholder} value={maskDemoText(imageOutputPath)} />
           </div>
           <button class="picker-button" on:click={pickImageOutput} aria-label="Choose image output path">
             <img src={pickerIcon} alt="" />
@@ -395,7 +399,7 @@
         </div>
         <div class="output-picker">
           <div class="output-input">
-            <input readonly placeholder="Choose where to save the QR code..." bind:value={qrOutputPath} />
+            <input readonly placeholder="Choose where to save the QR code..." value={maskDemoText(qrOutputPath)} />
           </div>
           <button class="picker-button" on:click={pickQrOutput} aria-label="Choose QR output path">
             <img src={pickerIcon} alt="" />
@@ -419,7 +423,7 @@
       <section class="status-panel error-panel">
         <ul class="req-list">
           {#each missingRequirements as req}
-            <li><strong>{req.name}:</strong> {req.hint}</li>
+            <li><strong>{req.name}:</strong> {maskDemoText(req.hint)}</li>
           {/each}
         </ul>
       </section>
@@ -437,7 +441,7 @@
     {/if}
 
     {#if errorMsg}
-      <div class="alert error">{errorMsg}</div>
+      <div class="alert error">{maskDemoText(errorMsg)}</div>
     {/if}
 
     <button class="primary" disabled={building || checkingRequirements || missingRequirements.length > 0} on:click={startBuild}>

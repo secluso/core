@@ -4,6 +4,7 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { listenProvisionEvents, type ProvisionEvent } from "$lib/api";
+  import { maskDemoText } from "$lib/demoDisplay";
 
   type StepState = "pending" | "running" | "ok" | "error";
   type LogTone = "info" | "warn" | "error" | "success";
@@ -86,7 +87,7 @@
     mode === "image"
       ? "The build typically takes 2-5 minutes. Your image will include encryption keys and auto-updater configuration."
       : "Provisioning typically takes 2-5 minutes. Secluso installs the verified server binaries, configures the service, and checks public reachability.";
-  $: logText = logs.map((log) => `${log.time} ${log.step ?? "general"} ${log.line}`).join("\n");
+  $: logText = logs.map((log) => `${log.time} ${log.step ?? "general"} ${maskDemoText(log.line)}`).join("\n");
 
   function resetState() {
     stepStatus = {};
@@ -246,7 +247,7 @@
     <div class="overlay" role="status" aria-live="polite">
       <div class="modal warn">
         <div class="modal-title">Updater not set up</div>
-        <div class="modal-body">{updaterWarning}</div>
+        <div class="modal-body">{maskDemoText(updaterWarning)}</div>
         <button class="modal-btn" on:click={() => (updaterWarning = null)}>Dismiss</button>
       </div>
     </div>
@@ -302,7 +303,7 @@
                 <div class={`log-line ${logTone(log)}`}>
                   <span class="time">{log.time}</span>
                   <span class="log-dot"></span>
-                  <span class="message">{log.line}</span>
+                  <span class="message">{maskDemoText(log.line)}</span>
                 </div>
               {/each}
               <div class="terminal-cursor"></div>

@@ -19,6 +19,7 @@
     githubToken: string;
     manifestVersionOverride: string;
     showDockerHelp: boolean;
+    maskUserPathsWithDemo: boolean;
   };
 
   const STORAGE_KEY = "secluso-dev-settings";
@@ -41,7 +42,8 @@
     key2User: "",
     githubToken: "",
     manifestVersionOverride: "",
-    showDockerHelp: false
+    showDockerHelp: false,
+    maskUserPathsWithDemo: false
   };
 
   let devSettings: DevSettings = { ...defaultSettings };
@@ -139,6 +141,21 @@
             <span class="option-label">Force Docker help panel</span>
           </label>
           <p>Shows the Docker install panel even when Docker is installed.</p>
+        </section>
+
+        <section class="option-card">
+          <div class="option-header">
+            <h2>Demo</h2>
+            <span class="badge">OPTIONAL</span>
+          </div>
+          <label class="switch-row compact">
+            <span class="switch">
+              <input type="checkbox" bind:checked={devSettings.maskUserPathsWithDemo} />
+              <span class="switch-track"></span>
+            </span>
+            <span class="option-label">Hide username in paths with "demo"</span>
+          </label>
+          <p>Masks displayed macOS home paths as <code>/Users/demo</code> in fields, errors, and copied logs.</p>
         </section>
 
         <section class="option-card">

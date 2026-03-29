@@ -1,15 +1,18 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import {
+    listenProvisionEvents,
     testServerSsh,
     provisionServer,
+    type ProvisionEvent,
     type ServerRuntimePlan,
     type SshTarget,
     type ServerPlan
   } from "$lib/api";
+  import { maskDemoText } from "$lib/demoDisplay";
 
   let host = "";
   let port = 22;
@@ -48,6 +51,7 @@
     githubToken: string;
     manifestVersionOverride: string;
     showDockerHelp: boolean;
+    maskUserPathsWithDemo: boolean;
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
@@ -62,7 +66,8 @@
     key2User: "",
     githubToken: "",
     manifestVersionOverride: "",
-    showDockerHelp: false
+    showDockerHelp: false,
+    maskUserPathsWithDemo: false
   };
   let devSettings: DevSettings | null = null;
   let firstTimeOn = false;
@@ -72,6 +77,10 @@
   let errorMsg = "";
   let testResult: "ok" | "error" | null = null;
   let testMessage = "";
+  let activeTestRunId = "";
+  let testProgressTitle = "";
+  let testProgressDetail = "";
+  let unlistenProvision: (() => void) | null = null;
 
   function goBack() {
     goto("/");
@@ -219,10 +228,14 @@
     errorMsg = "";
     testResult = null;
     testMessage = "";
+    testProgressTitle = "";
+    testProgressDetail = "";
+    activeTestRunId = "";
     const err = validateTarget();
     if (err) { errorMsg = err; return; }
 
     testing = true;
+    testProgressTitle = "Connecting via SSH";
     try {
       const target: SshTarget = {
         host,
@@ -238,11 +251,16 @@
       await testServerSsh(target, buildRuntimePlan(), buildCredentialsServerUrl() || undefined);
       testResult = "ok";
       testMessage = "Preflight OK. SSH, sudo, OS, port, network, and compatibility checks passed.";
+      testProgressTitle = "Preflight complete";
+      testProgressDetail = "";
     } catch (e: any) {
       testResult = "error";
       testMessage = e?.toString() ?? "SSH test failed.";
+      if (!testProgressTitle) testProgressTitle = "Preflight failed";
+      if (!testProgressDetail) testProgressDetail = testMessage;
     } finally {
       testing = false;
+      activeTestRunId = "";
     }
   }
 
@@ -364,6 +382,46 @@
     firstTimeOn = raw === "true";
   });
 
+  onMount(async () => {
+    unlistenProvision = await listenProvisionEvents((evt) => handleProvisionEvent(evt));
+  });
+
+  onDestroy(() => {
+    unlistenProvision?.();
+  });
+
+  function handleProvisionEvent(evt: ProvisionEvent) {
+    if (!testing && !activeTestRunId) return;
+    if (!activeTestRunId) activeTestRunId = evt.run_id;
+    if (evt.run_id !== activeTestRunId) return;
+
+    if (evt.type === "step_start") {
+      testProgressTitle = evt.title;
+      testProgressDetail = "";
+      return;
+    }
+
+    if (evt.type === "step_ok") {
+      if (evt.step === "preflight") {
+        testProgressTitle = "Preflight complete";
+        testProgressDetail = "";
+      }
+      return;
+    }
+
+    if (evt.type === "step_error") {
+      testProgressTitle = evt.step === "ssh_test" ? "SSH check failed" : "Preflight failed";
+      testProgressDetail = evt.message;
+      return;
+    }
+
+    if (evt.type === "log") {
+      const line = evt.line.trim();
+      if (line) testProgressDetail = line;
+      return;
+    }
+  }
+
   function toggleFirstTime() {
     firstTimeOn = !firstTimeOn;
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
@@ -401,7 +459,7 @@
     <div class="overlay" role="status" aria-live="polite">
       <div class="modal {testResult}">
         <div class="modal-title">{testResult === "ok" ? "Preflight OK" : "Preflight failed"}</div>
-        <div class="modal-body">{testMessage}</div>
+        <div class="modal-body">{maskDemoText(testMessage)}</div>
         <button class="modal-btn" type="button" on:click={() => (testResult = null)}>Dismiss</button>
       </div>
     </div>
@@ -477,7 +535,7 @@
         <label class="field">
           <span>Private key path</span>
           <div class="field-row">
-            <input readonly placeholder="Choose private key" bind:value={keyPath} />
+            <input readonly placeholder="Choose private key" value={maskDemoText(keyPath)} />
             <button class="ghost" type="button" on:click={pickKeyFile}>Choose File</button>
           </div>
         </label>
@@ -488,7 +546,7 @@
       {:else}
         <label class="field">
           <span>Private key (PEM/OpenSSH)</span>
-          <textarea rows="5" bind:value={keyText} placeholder="-----BEGIN OPENSSH PRIVATE KEY----- …" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+          <textarea rows="5" bind:value={keyText} placeholder="-----BEGIN OPENSSH PRIVATE KEY----- …" autocapitalize="off" spellcheck="false"></textarea>
         </label>
         <label class="field">
           <span>Key passphrase (optional)</span>
@@ -510,9 +568,6 @@
         </label>
       {/if}
 
-      <button class="secondary" type="button" on:click={onTest} disabled={testing || provisioning}>
-        {testing ? "Running Preflight…" : "Run Preflight"}
-      </button>
     </section>
 
     <section class="panel">
@@ -571,6 +626,22 @@
           {/if}
         </label>
       {/if}
+
+      <div class="action-row">
+        <button class="secondary" type="button" on:click={onTest} disabled={testing || provisioning}>
+          {testing ? "Preflight…" : "Run Preflight"}
+        </button>
+        {#if testing && (testProgressTitle || testProgressDetail)}
+          <div class="action-status" aria-live="polite">
+            {#if testProgressTitle}
+              <span class="action-status-title">{testProgressTitle}</span>
+            {/if}
+            {#if testProgressDetail}
+              <span class="action-status-detail">{maskDemoText(testProgressDetail)}</span>
+            {/if}
+          </div>
+        {/if}
+      </div>
     </section>
 
     <section class="panel">
@@ -584,7 +655,7 @@
           </a>
         </span>
         <div class="field-row">
-          <input readonly placeholder="Choose service_account_key.json" bind:value={serviceAccountKeyPath} />
+          <input readonly placeholder="Choose service_account_key.json" value={maskDemoText(serviceAccountKeyPath)} />
           <button class="ghost" type="button" on:click={pickServiceAccountKey}>Choose File</button>
         </div>
       </label>
@@ -592,7 +663,7 @@
       <label class="field">
         <span>Save user credentials QR code to</span>
         <div class="field-row">
-          <input readonly placeholder="Choose where to save user_credentials_qr.png" bind:value={userCredentialsQrPath} />
+          <input readonly placeholder="Choose where to save user_credentials_qr.png" value={maskDemoText(userCredentialsQrPath)} />
           <button class="ghost" type="button" on:click={pickUserCredentialsQrSave}>Choose Path</button>
         </div>
       </label>
@@ -609,7 +680,7 @@
     </section>
 
     {#if errorMsg}
-      <div class="alert error">{errorMsg}</div>
+      <div class="alert error">{maskDemoText(errorMsg)}</div>
     {/if}
 
     <button class="primary" type="button" on:click={onProvision} disabled={provisioning || testing}>
@@ -757,6 +828,37 @@
     background: rgba(255, 255, 255, 0.05);
     position: relative;
     flex: 0 0 auto;
+  }
+
+  .action-row {
+    margin-top: 20px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  .action-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .action-status-title {
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 600;
+  }
+
+  .action-status-detail {
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 11px;
+    line-height: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .switch-row input::after {
@@ -1062,11 +1164,12 @@
   .secondary {
     margin-top: 16px;
     width: fit-content;
-    min-width: 106.9px;
+    min-width: 112px;
     max-width: 100%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 auto;
   }
 
   .primary {

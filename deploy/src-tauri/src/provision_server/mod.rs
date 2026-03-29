@@ -19,7 +19,7 @@ use uuid::Uuid;
 // tauri commands
 
 #[tauri::command]
-pub async fn test_server_ssh(app: AppHandle, target: SshTarget, runtime: Option<ServerRuntimePlan>, _server_url: Option<String>) -> Result<(), String> {
+pub async fn test_server_ssh(app: AppHandle, target: SshTarget, runtime: Option<ServerRuntimePlan>, server_url: Option<String>) -> Result<(), String> {
   let run_id = Uuid::new_v4();
   step_start(&app, run_id, "ssh_test", "Connecting via SSH");
 
@@ -28,7 +28,7 @@ pub async fn test_server_ssh(app: AppHandle, target: SshTarget, runtime: Option<
     let (sess, _temps) = connect_ssh(&target)?;
     step_ok(&app2, run_id, "ssh_test");
     step_start(&app2, run_id, "preflight", "Checking server compatibility");
-    run_preflight(&app2, run_id, "preflight", &sess, &target, runtime.as_ref())?;
+    run_preflight(&app2, run_id, "preflight", &sess, &target, runtime.as_ref(), server_url.as_deref())?;
     step_ok(&app2, run_id, "preflight");
     Ok(())
   })

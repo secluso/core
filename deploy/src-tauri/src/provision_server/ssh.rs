@@ -4,12 +4,15 @@ use crate::provision_server::types::{SshAuth, SshTarget};
 use anyhow::{bail, Context, Result};
 use ssh2::Session;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::time::Duration;
 use tauri::AppHandle;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
+
+const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SSH_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct TempKeyFiles {
   pub key_file: Option<NamedTempFile>,
@@ -22,12 +25,50 @@ impl TempKeyFiles {
 }
 
 pub fn connect_ssh(target: &SshTarget) -> Result<(Session, TempKeyFiles)> {
-  let tcp = TcpStream::connect((target.host.as_str(), target.port))
-    .with_context(|| format!("Failed to connect to {}:{}", target.host, target.port))?;
-  tcp.set_read_timeout(Some(Duration::from_secs(30))).ok();
-  tcp.set_write_timeout(Some(Duration::from_secs(30))).ok();
+  let target_addr = format!("{}:{}", target.host, target.port);
+  let addrs = target_addr
+    .to_socket_addrs()
+    .with_context(|| format!("Failed to resolve SSH target {}", target_addr))?
+    .collect::<Vec<_>>();
+  if addrs.is_empty() {
+    bail!("Failed to resolve SSH target {}.", target_addr);
+  }
+
+  let mut last_err = None;
+  let mut tcp = None;
+  for addr in addrs {
+    match TcpStream::connect_timeout(&addr, SSH_CONNECT_TIMEOUT) {
+      Ok(stream) => {
+        tcp = Some(stream);
+        break;
+      }
+      Err(err) => {
+        last_err = Some((addr, err));
+      }
+    }
+  }
+
+  let tcp = match tcp {
+    Some(stream) => stream,
+    None => {
+      let detail = match last_err {
+        Some((addr, err)) => format!("{addr} ({err})"),
+        None => "no resolved addresses".to_string(),
+      };
+      bail!(
+        "Failed to connect to {} within {} seconds: {}",
+        target_addr,
+        SSH_CONNECT_TIMEOUT.as_secs(),
+        detail
+      );
+    }
+  };
+
+  tcp.set_read_timeout(Some(SSH_IO_TIMEOUT)).ok();
+  tcp.set_write_timeout(Some(SSH_IO_TIMEOUT)).ok();
 
   let mut sess = Session::new().context("Failed to create SSH session")?;
+  sess.set_timeout(SSH_IO_TIMEOUT.as_millis() as u32);
   sess.set_tcp_stream(tcp);
   sess.handshake().context("SSH handshake failed")?;
 
