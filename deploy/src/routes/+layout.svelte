@@ -4,15 +4,17 @@
 
   let checked = false;
   let isTauri = false;
+  let browserPreview = false;
 
   onMount(() => {
     const w = window as any;
     isTauri = Boolean(w?.__TAURI__ || w?.__TAURI_INTERNALS__ || w?.__TAURI_IPC__);
+    browserPreview = new URLSearchParams(window.location.search).get("browserPreview") === "1";
     checked = true;
   });
 </script>
 
-{#if checked && !isTauri}
+{#if checked && !isTauri && !browserPreview}
   <main class="blocked">
     <div class="panel">
       <h1>Desktop app only</h1>

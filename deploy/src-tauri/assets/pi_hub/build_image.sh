@@ -316,6 +316,11 @@ if [[ "$HAS_SECLUSO" == "true" ]]; then
     run install -m 600 "$WORK/camera_secret" "$ROOT/var/lib/secluso/camera_secret"
   fi
 
+  # copy wifi password into runtime dir
+  if [[ -f "$WORK/wifi_password" ]]; then
+    run install -m 600 "$WORK/wifi_password" "$ROOT/var/lib/secluso/wifi_password"
+  fi
+
   [[ -f "$BUNDLE_ZIP" ]] || {
     emit "error" "secluso" "Missing required bundle at $BUNDLE_ZIP"
     exit 1
@@ -375,6 +380,7 @@ WorkingDirectory=/var/lib/secluso
 # fail fast if secrets or binary missing
 ExecStartPre=/usr/bin/test -x ${SECLUSO_INSTALL_DIR}/bin/secluso-raspberry-camera-hub
 ExecStartPre=/usr/bin/test -r /var/lib/secluso/camera_secret
+ExecStartPre=/usr/bin/test -r /var/lib/secluso/wifi_password
 
 ExecStart=${SECLUSO_INSTALL_DIR}/bin/secluso-raspberry-camera-hub
 Environment="RUST_LOG=info"

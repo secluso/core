@@ -918,28 +918,50 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     let failure_store: FailStore = Arc::new(DashMap::new());
 
     let mut network_type: Option<String> = None;
+    let mut bind_address: Option<String> = None;
+    let mut listen_port: Option<u16> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--network-type" {
             if let Some(value) = args.next() {
                 network_type = Some(value);
             }
+        } else if arg == "--bind-address" {
+            if let Some(value) = args.next() {
+                bind_address = Some(value);
+            }
+        } else if arg == "--port" {
+            if let Some(value) = args.next() {
+                if let Ok(parsed) = value.parse::<u16>() {
+                    listen_port = Some(parsed);
+                } else {
+                    eprintln!("Invalid --port={value}. Falling back to default 8000.");
+                }
+            }
         } else if let Some(value) = arg.strip_prefix("--network-type=") {
             network_type = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("--bind-address=") {
+            bind_address = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("--port=") {
+            if let Ok(parsed) = value.parse::<u16>() {
+                listen_port = Some(parsed);
+            } else {
+                eprintln!("Invalid --port={value}. Falling back to default 8000.");
+            }
         }
     }
 
-    let address = match network_type.as_deref() {
-        Some("http") => "0.0.0.0",
-        Some("https") | None => "127.0.0.1",
+    let address = bind_address.unwrap_or_else(|| match network_type.as_deref() {
+        Some("http") => "0.0.0.0".to_string(),
+        Some("https") | None => "127.0.0.1".to_string(),
         Some(other) => {
             eprintln!("Unknown --network-type={other}. Use http or https.");
-            "127.0.0.1"
+            "127.0.0.1".to_string()
         }
-    };
+    });
 
     let config = rocket::Config {
-        port: 8000,
+        port: listen_port.unwrap_or(8000),
         address: address.parse().unwrap(),
         ..rocket::Config::default()
     };

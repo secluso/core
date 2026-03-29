@@ -1,20 +1,19 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
-  import { browser } from "$app/environment";
   import {
+    listenProvisionEvents,
     testServerSsh,
     provisionServer,
-    checkRequirements,
-    openExternalUrl,
-    type RequirementStatus,
+    type ProvisionEvent,
+    type ServerRuntimePlan,
     type SshTarget,
     type ServerPlan
   } from "$lib/api";
+  import { maskDemoText } from "$lib/demoDisplay";
 
-  // ssh target state
   let host = "";
   let port = 22;
   let user = "root";
@@ -24,6 +23,7 @@
   let password = "";
   let keyPath = "";
   let keyText = "";
+  let keyPassphrase = "";
 
   let useSameForSudo = true;
   let sudoPassword = "";
@@ -32,7 +32,14 @@
   let overwriteInstall = false;
   let serviceAccountKeyPath = "";
   let userCredentialsQrPath = "";
-  let credentialsServerUrl = "";
+  let advancedNetworkMode = false;
+  type AccessMode = "direct" | "proxy";
+  let accessMode: AccessMode = "direct";
+  let directPublicAddress = "";
+  let directListenPort = 8000;
+  let proxyPublicUrl = "";
+  let proxyListenPort = 18000;
+
   type DevSettings = {
     enabled: boolean;
     binariesSource: "main" | "custom";
@@ -42,7 +49,9 @@
     key2Name: string;
     key2User: string;
     githubToken: string;
+    manifestVersionOverride: string;
     showDockerHelp: boolean;
+    maskUserPathsWithDemo: boolean;
   };
 
   const SETTINGS_KEY = "secluso-dev-settings";
@@ -56,23 +65,22 @@
     key2Name: "",
     key2User: "",
     githubToken: "",
-    showDockerHelp: false
+    manifestVersionOverride: "",
+    showDockerHelp: false,
+    maskUserPathsWithDemo: false
   };
   let devSettings: DevSettings | null = null;
   let firstTimeOn = false;
 
-  // ui state
   let testing = false;
   let provisioning = false;
   let errorMsg = "";
   let testResult: "ok" | "error" | null = null;
   let testMessage = "";
-  let requirements: RequirementStatus[] = [];
-  let missingRequirements: RequirementStatus[] = [];
-  let checkingRequirements = true;
-  $: dockerMissing = missingRequirements.some((req) => req.name === "Docker");
-  $: buildxMissing = missingRequirements.some((req) => req.name === "Docker Buildx");
-  $: showDockerHelp = dockerMissing || buildxMissing || (!!devSettings?.enabled && !!devSettings?.showDockerHelp);
+  let activeTestRunId = "";
+  let testProgressTitle = "";
+  let testProgressDetail = "";
+  let unlistenProvision: (() => void) | null = null;
 
   function goBack() {
     goto("/");
@@ -83,8 +91,7 @@
       const path = await open({
         title: "Choose private key file",
         multiple: false,
-        directory: false,
-        filters: [{ name: "SSH Key", extensions: ["pem", "key", "ppk"] }]
+        directory: false
       });
       if (typeof path === "string") keyPath = path;
       if (Array.isArray(path) && path.length) keyPath = path[0];
@@ -116,6 +123,104 @@
     if (authMode === "keyfile" && !keyPath) return "Select a private key file.";
     if (authMode === "keypaste" && !keyText.trim()) return "Paste a private key.";
     if (!useSameForSudo && !sudoPassword) return "Enter sudo password or toggle same-as-login.";
+    const runtime = buildRuntimePlan();
+    if (runtime.listenPort < 1 || runtime.listenPort > 65535) return "Secluso listen port must be between 1 and 65535.";
+    if (effectiveAccessMode() === "proxy" && !proxyPublicUrl.trim()) return "Enter the public URL already served by your reverse proxy.";
+    return null;
+  }
+
+  function effectiveAccessMode(): AccessMode {
+    return advancedNetworkMode ? accessMode : "direct";
+  }
+
+  function buildAuth(): SshTarget["auth"] {
+    if (authMode === "password") {
+      return { kind: "password", password };
+    }
+    if (authMode === "keyfile") {
+      return {
+        kind: "keyfile",
+        path: keyPath,
+        passphrase: keyPassphrase.trim() ? keyPassphrase : undefined
+      };
+    }
+    return {
+      kind: "keytext",
+      text: keyText,
+      passphrase: keyPassphrase.trim() ? keyPassphrase : undefined
+    };
+  }
+
+  function buildRuntimePlan(): ServerRuntimePlan {
+    if (effectiveAccessMode() === "proxy") {
+      return {
+        exposureMode: "proxy",
+        bindAddress: "127.0.0.1",
+        listenPort: proxyListenPort
+      };
+    }
+    return {
+      exposureMode: "direct",
+      bindAddress: "0.0.0.0",
+      listenPort: directListenPort
+    };
+  }
+
+  function buildCredentialsServerUrl(): string {
+    const runtime = buildRuntimePlan();
+    const mode = effectiveAccessMode();
+    const candidate =
+      mode === "proxy"
+        ? proxyPublicUrl.trim()
+        : (advancedNetworkMode ? directPublicAddress.trim() : "") || host.trim();
+    if (!candidate) return "";
+
+    const withScheme =
+      candidate.startsWith("http://") || candidate.startsWith("https://")
+        ? candidate
+        : mode === "proxy"
+        ? `https://${candidate}`
+        : `http://${candidate}`;
+
+    try {
+      const url = new URL(withScheme);
+      if (mode === "direct" && !url.port) {
+        url.port = String(runtime.listenPort);
+      }
+      return url.toString().replace(/\/$/, "");
+    } catch {
+      return withScheme.replace(/\/$/, "");
+    }
+  }
+
+  function credentialsUrlWarning(urlValue: string): string | null {
+    if (!urlValue) return null;
+    try {
+      const url = new URL(urlValue);
+      const runtime = buildRuntimePlan();
+      if (effectiveAccessMode() === "direct") {
+        if (url.protocol === "https:") {
+          return "Direct mode serves Secluso over plain HTTP on the server port.";
+        }
+        const effectivePort = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+        if (effectivePort !== runtime.listenPort) {
+          return "This public URL port does not match the configured Secluso listen port.";
+        }
+      }
+      const hostValue = url.hostname;
+      if (hostValue === "localhost" || hostValue === "127.0.0.1" || hostValue === "::1") {
+        return "localhost only works on the same machine. Use your public server IP or domain for phone access.";
+      }
+      const ipv4Match = hostValue.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+      if (ipv4Match) {
+        const [a, b] = ipv4Match.slice(1).map(Number);
+        if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a === 127) {
+          return "This is a private/local IP. Remote access only works if the phone can reach that network or VPN.";
+        }
+      }
+    } catch {
+      return null;
+    }
     return null;
   }
 
@@ -123,56 +228,44 @@
     errorMsg = "";
     testResult = null;
     testMessage = "";
-    if (checkingRequirements) {
-      errorMsg = "Checking required tools. Try again in a moment.";
-      return;
-    }
-    if (missingRequirements.length > 0) {
-      errorMsg = `Missing required tools: ${missingRequirements.map((req) => req.name).join(", ")}.`;
-      return;
-    }
+    testProgressTitle = "";
+    testProgressDetail = "";
+    activeTestRunId = "";
     const err = validateTarget();
     if (err) { errorMsg = err; return; }
 
     testing = true;
+    testProgressTitle = "Connecting via SSH";
     try {
       const target: SshTarget = {
         host,
         port,
         user,
-        auth:
-          authMode === "password"
-            ? { kind: "password", password }
-            : authMode === "keyfile"
-            ? { kind: "keyfile", path: keyPath }
-            : { kind: "keytext", text: keyText },
+        auth: buildAuth(),
         sudo: {
           mode: useSameForSudo ? "same" : "password",
           password: useSameForSudo ? undefined : sudoPassword
         }
       };
 
-      await testServerSsh(target);
+      await testServerSsh(target, buildRuntimePlan(), buildCredentialsServerUrl() || undefined);
       testResult = "ok";
-      testMessage = "SSH OK. Server reachable and command execution succeeded.";
+      testMessage = "Preflight OK. SSH, sudo, OS, port, network, and compatibility checks passed.";
+      testProgressTitle = "Preflight complete";
+      testProgressDetail = "";
     } catch (e: any) {
       testResult = "error";
       testMessage = e?.toString() ?? "SSH test failed.";
+      if (!testProgressTitle) testProgressTitle = "Preflight failed";
+      if (!testProgressDetail) testProgressDetail = testMessage;
     } finally {
       testing = false;
+      activeTestRunId = "";
     }
   }
 
   async function onProvision() {
     errorMsg = "";
-    if (checkingRequirements) {
-      errorMsg = "Checking required tools. Try again in a moment.";
-      return;
-    }
-    if (missingRequirements.length > 0) {
-      errorMsg = `Missing required tools: ${missingRequirements.map((req) => req.name).join(", ")}.`;
-      return;
-    }
     const tErr = validateTarget();
     if (tErr) { errorMsg = tErr; return; }
     if (!serviceAccountKeyPath.trim()) { errorMsg = "Service account key is required."; return; }
@@ -181,17 +274,10 @@
     }
     if (!userCredentialsQrPath.trim()) { errorMsg = "Choose where to save the QR code."; return; }
 
-    const rawServerUrl = credentialsServerUrl.trim();
-    const serverUrl = rawServerUrl
-      ? rawServerUrl.startsWith("http://") || rawServerUrl.startsWith("https://")
-        ? rawServerUrl
-        : `https://${rawServerUrl}`
-      : host.trim()
-      ? `https://${host.trim()}`
-      : "";
+    const serverUrl = buildCredentialsServerUrl();
     if (!serverUrl) { errorMsg = "Server URL is required to generate credentials."; return; }
-    if (serverUrl.toLowerCase().startsWith("https://")) {
-      errorMsg = "HTTPS is not supported yet for automatic setups. Use http:// for now.";
+    if (effectiveAccessMode() === "direct" && serverUrl.toLowerCase().startsWith("https://")) {
+      errorMsg = "Direct mode serves Secluso over plain HTTP on the server port. Use Advanced network setup and Existing reverse proxy if your public URL should be HTTPS.";
       return;
     }
     const useDevRepo = devSettings?.enabled && devSettings.binariesSource === "custom";
@@ -211,12 +297,7 @@
 
     const target: SshTarget = {
       host, port, user,
-      auth:
-        authMode === "password"
-          ? { kind: "password", password }
-          : authMode === "keyfile"
-          ? { kind: "keyfile", path: keyPath }
-          : { kind: "keytext", text: keyText },
+      auth: buildAuth(),
       sudo: {
         mode: useSameForSudo ? "same" : "password",
         password: useSameForSudo ? undefined : sudoPassword
@@ -238,9 +319,8 @@
         : [];
 
     const plan: ServerPlan = {
-      useDocker: false,
-      protectPackages: false,
       autoUpdater: { enable: enableAutoUpdater },
+      runtime: buildRuntimePlan(),
       secrets: {
         serviceAccountKeyPath,
         serverUrl,
@@ -249,6 +329,10 @@
       sigKeys: sigKeys.length ? sigKeys : undefined,
       binariesRepo: useDevRepo ? devSettings?.binariesRepo.trim() : undefined,
       githubToken: devSettings?.githubToken.trim() ? devSettings?.githubToken.trim() : undefined,
+      manifestVersionOverride:
+        devSettings?.enabled && devSettings?.manifestVersionOverride.trim()
+          ? devSettings.manifestVersionOverride.trim()
+          : undefined,
       overwrite: overwriteInstall
     };
 
@@ -265,7 +349,7 @@
   async function pickUserCredentialsQrSave() {
     try {
       const path = await save({
-        title: "Save user credentials QR code as…",
+        title: "Choose where to save the user credentials QR code…",
         defaultPath: "user_credentials_qr.png",
         filters: [{ name: "PNG image", extensions: ["png"] }]
       });
@@ -291,9 +375,52 @@
 
   onMount(() => {
     const raw = localStorage.getItem(FIRST_TIME_KEY);
-    if (raw === null) return;
+    if (raw === null) {
+      firstTimeOn = true;
+      return;
+    }
     firstTimeOn = raw === "true";
   });
+
+  onMount(async () => {
+    unlistenProvision = await listenProvisionEvents((evt) => handleProvisionEvent(evt));
+  });
+
+  onDestroy(() => {
+    unlistenProvision?.();
+  });
+
+  function handleProvisionEvent(evt: ProvisionEvent) {
+    if (!testing && !activeTestRunId) return;
+    if (!activeTestRunId) activeTestRunId = evt.run_id;
+    if (evt.run_id !== activeTestRunId) return;
+
+    if (evt.type === "step_start") {
+      testProgressTitle = evt.title;
+      testProgressDetail = "";
+      return;
+    }
+
+    if (evt.type === "step_ok") {
+      if (evt.step === "preflight") {
+        testProgressTitle = "Preflight complete";
+        testProgressDetail = "";
+      }
+      return;
+    }
+
+    if (evt.type === "step_error") {
+      testProgressTitle = evt.step === "ssh_test" ? "SSH check failed" : "Preflight failed";
+      testProgressDetail = evt.message;
+      return;
+    }
+
+    if (evt.type === "log") {
+      const line = evt.line.trim();
+      if (line) testProgressDetail = line;
+      return;
+    }
+  }
 
   function toggleFirstTime() {
     firstTimeOn = !firstTimeOn;
@@ -323,305 +450,800 @@
       toggleFirstTime();
     }
   }
-
-  async function openExternal(url: string) {
-    if (!browser) return;
-    try {
-      await openExternalUrl(url);
-    } catch (err) {
-      console.warn("Failed to open external link via shell opener.", err);
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
-  }
-
-  onMount(async () => {
-    try {
-      requirements = await checkRequirements();
-      missingRequirements = requirements.filter((req) => !req.ok);
-    } catch {
-      requirements = [];
-      missingRequirements = [];
-    } finally {
-      checkingRequirements = false;
-    }
-  });
 </script>
 
-<main class="wrap">
+<main class="page">
+  <div class="backdrop"></div>
+
   {#if testResult}
     <div class="overlay" role="status" aria-live="polite">
       <div class="modal {testResult}">
-        <div class="modal-title">{testResult === "ok" ? "SSH OK" : "SSH test failed"}</div>
-        <div class="modal-body">{testMessage}</div>
+        <div class="modal-title">{testResult === "ok" ? "Preflight OK" : "Preflight failed"}</div>
+        <div class="modal-body">{maskDemoText(testMessage)}</div>
         <button class="modal-btn" type="button" on:click={() => (testResult = null)}>Dismiss</button>
       </div>
     </div>
   {/if}
-  <header class="topbar">
-    <button class="back" type="button" on:click={goBack}>← Back</button>
-    <h1>Provision Server (SSH)</h1>
-    <div class="spacer"></div>
-  </header>
 
-  {#if checkingRequirements}
-    <section class="card requirements">
-      <h2>Setup checks</h2>
-      <p class="muted">Checking local tools…</p>
-    </section>
-  {:else if missingRequirements.length > 0}
-    <section class="card requirements">
-      <h2>Missing tools</h2>
-      <ul class="req-list">
-        {#each missingRequirements as req}
-          <li class="req-item">
-            <span class="req-name">{req.name}</span>
-            <span class="req-status missing">Missing</span>
-            <span class="req-detail">{req.hint}</span>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  {#if showDockerHelp}
-    <section class="card requirements">
-      <h2>Install Docker</h2>
-      <p class="muted">Docker is required to continue.</p>
-      <ul class="req-steps">
-        <li>Windows: install Docker Desktop and enable the WSL 2 backend.</li>
-        <li>macOS: install Docker Desktop for Mac.</li>
-        <li>Linux: install Docker Engine and the Buildx plugin.</li>
-      </ul>
-      <div class="req-links">
-        <a href="https://docs.docker.com/desktop/install/windows-install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/desktop/install/windows-install/")}>Windows install guide</a>
-        <a href="https://docs.docker.com/desktop/install/mac-install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/desktop/install/mac-install/")}>macOS install guide</a>
-        <a href="https://docs.docker.com/engine/install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/engine/install/")}>Linux install guide</a>
-      </div>
-    </section>
-  {/if}
-
-  {#if firstTimeOn}
-    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
-      <div class="cardhead">
-        <h2>First time?</h2>
-        <label class="toggle">
+  <section class="frame">
+    <div class="toolbar">
+      <button class="back" type="button" on:click={goBack}>
+        <img src="/deploy-assets/server-back.svg" alt="" />
+        <span>Back</span>
+      </button>
+      <label class="tips-toggle">
+        <span>Show tips</span>
+        <span class="tips-switch">
           <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>Show step-by-step guidance</span>
-        </label>
-      </div>
-      <ol class="quick-steps">
-        <li>Enter the server login details you get from your provider and test the connection.</li>
-        <li>Set your server address and choose your service account key file.</li>
-        <li>Choose where to save the server QR code.</li>
-        <li>Click Provision Server, then scan this QR code in the app.</li>
-        <li>When you are done, open the app and scan the server QR code, then the camera QR code.</li>
-      </ol>
-      <p class="muted">Need a server? A low cost option is Ionos VPS for around $2 per month. Just copy the login details from your provider and the app does the rest. We are not affiliated with Ionos.</p>
-      <p class="muted"><a class="help-link" href="/ionos-help" on:click={setHelpRef}>Ionos VPS step-by-step guide</a></p>
-    </section>
-  {:else}
-    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
-      <div class="cardhead">
-        <h2>First time?</h2>
-        <label class="toggle">
-          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>Show step-by-step guidance</span>
-        </label>
-      </div>
-      <p class="muted">Turn on the toggle to see the step-by-step guide.</p>
-    </section>
-  {/if}
-
-  <section class="card">
-    <h2>SSH Target</h2>
-    <div class="grid-3">
-      <label class="field"><span>Host / IP</span><input placeholder="server.example.com or 203.0.113.45" bind:value={host} /></label>
-      <label class="field"><span>Port</span><input type="number" min="1" max="65535" bind:value={port} /></label>
-      <label class="field"><span>User</span><input placeholder="root" bind:value={user} /></label>
+          <span class="tips-track"></span>
+        </span>
+      </label>
     </div>
 
-    <div class="auth">
-      <div class="inline-options">
-        <label class="radio"><input type="radio" name="auth" value="password" bind:group={authMode} /><span>Password</span></label>
-        <label class="radio"><input type="radio" name="auth" value="keyfile" bind:group={authMode} /><span>Key file</span></label>
-        <label class="radio"><input type="radio" name="auth" value="keypaste" bind:group={authMode} /><span>Paste key</span></label>
+    <div class="step-pill">Step 2</div>
+
+    <div class="hero">
+      <div>
+        <h1>Provision Server</h1>
+        <p>Install Secluso on your Linux server via SSH. Sets up services, packages, and the auto-updater.</p>
+      </div>
+      <img class="hero-art" src="/deploy-assets/server-hero-exact.svg" alt="" />
+    </div>
+
+    <section class="panel">
+      <h2>SSH Target</h2>
+      <div class="grid">
+        <label class="field field-wide">
+          <span>Host / IP</span>
+          <input placeholder="server.example.com or 203.0.113.45" bind:value={host} autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>Port</span>
+          <input type="number" min="1" max="65535" bind:value={port} />
+        </label>
+        <label class="field">
+          <span>User</span>
+          <input placeholder="root" bind:value={user} autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </label>
+      </div>
+
+      <div class="label">Authentication</div>
+      <div class="pill-row">
+        <label class="choice {authMode === 'password' ? 'selected' : ''}">
+          <input type="radio" name="auth" value="password" bind:group={authMode} />
+          <img src="/deploy-assets/server-auth-password.svg" alt="" />
+          <span>Password</span>
+        </label>
+        <label class="choice {authMode === 'keyfile' ? 'selected' : ''}">
+          <input type="radio" name="auth" value="keyfile" bind:group={authMode} />
+          <img src="/deploy-assets/server-auth-keyfile.svg" alt="" />
+          <span>Key file</span>
+        </label>
+        <label class="choice {authMode === 'keypaste' ? 'selected' : ''}">
+          <input type="radio" name="auth" value="keypaste" bind:group={authMode} />
+          <img src="/deploy-assets/server-auth-paste.svg" alt="" />
+          <span>Paste key</span>
+        </label>
       </div>
 
       {#if authMode === "password"}
-        <label class="field"><span>Password</span><input type="password" bind:value={password} /></label>
+        <label class="field">
+          <span>Password</span>
+          <input type="password" bind:value={password} autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </label>
       {:else if authMode === "keyfile"}
-        <div class="row">
-          <label class="field grow"><span>Private key path</span><input readonly placeholder="Choose private key" bind:value={keyPath} /></label>
-          <button class="ghost" type="button" on:click={pickKeyFile}>Choose File</button>
-        </div>
+        <label class="field">
+          <span>Private key path</span>
+          <div class="field-row">
+            <input readonly placeholder="Choose private key" value={maskDemoText(keyPath)} />
+            <button class="ghost" type="button" on:click={pickKeyFile}>Choose File</button>
+          </div>
+        </label>
+        <label class="field">
+          <span>Key passphrase (optional)</span>
+          <input type="password" bind:value={keyPassphrase} placeholder="Only needed for encrypted private keys" autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </label>
       {:else}
-        <label class="field"><span>Private key (PEM/OpenSSH)</span><textarea rows="5" bind:value={keyText} placeholder="-----BEGIN OPENSSH PRIVATE KEY----- …"></textarea></label>
+        <label class="field">
+          <span>Private key (PEM/OpenSSH)</span>
+          <textarea rows="5" bind:value={keyText} placeholder="-----BEGIN OPENSSH PRIVATE KEY----- …" autocapitalize="off" spellcheck="false"></textarea>
+        </label>
+        <label class="field">
+          <span>Key passphrase (optional)</span>
+          <input type="password" bind:value={keyPassphrase} placeholder="Only needed for encrypted private keys" autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </label>
       {/if}
 
-      <div class="inline-options" style="margin-top:8px;">
-        <label class="toggle"><input type="checkbox" bind:checked={useSameForSudo} /><span>Use same login credentials for sudo</span></label>
-        {#if !useSameForSudo}
-          <label class="field" style="min-width:260px;">
-            <span>Sudo password</span><input type="password" bind:value={sudoPassword} />
-          </label>
+      <div class="switch-divider">
+        <label class="switch-row">
+          <input type="checkbox" bind:checked={useSameForSudo} />
+          <span>Use same credentials for sudo</span>
+        </label>
+      </div>
+
+      {#if !useSameForSudo}
+        <label class="field">
+          <span>Sudo password</span>
+          <input type="password" bind:value={sudoPassword} autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </label>
+      {/if}
+
+    </section>
+
+    <section class="panel">
+      <h2>App Access</h2>
+      <p class="muted">Simple mode exposes Secluso directly on <code>http://{host || "your-server"}:{directListenPort}</code>. Use Advanced only if you have a reverse proxy or domain.</p>
+
+      <label class="switch-row">
+        <input type="checkbox" bind:checked={advancedNetworkMode} />
+        <span>Advanced network setup</span>
+      </label>
+
+      {#if advancedNetworkMode}
+        <div class="pill-row">
+          <label class="choice {accessMode === 'direct' ? 'selected' : ''}"><input type="radio" name="access_mode" value="direct" bind:group={accessMode} /><span>Direct IP / Port</span></label>
+          <label class="choice {accessMode === 'proxy' ? 'selected' : ''}"><input type="radio" name="access_mode" value="proxy" bind:group={accessMode} /><span>Existing reverse proxy</span></label>
+        </div>
+
+        {#if accessMode === "direct"}
+          <div class="grid">
+            <label class="field">
+              <span>Public server address override</span>
+              <input placeholder="203.0.113.10 or http://203.0.113.10:9000" bind:value={directPublicAddress} autocorrect="off" autocapitalize="off" spellcheck="false" />
+            </label>
+            <label class="field">
+              <span>Secluso listen port</span>
+              <input type="number" min="1" max="65535" bind:value={directListenPort} />
+            </label>
+          </div>
+        {:else}
+          <div class="grid">
+            <label class="field">
+              <span>Public URL from your reverse proxy</span>
+              <input placeholder="https://cam.example.com or https://example.com/secluso" bind:value={proxyPublicUrl} autocorrect="off" autocapitalize="off" spellcheck="false" />
+            </label>
+            <label class="field">
+              <span>Local Secluso listen port</span>
+              <input type="number" min="1" max="65535" bind:value={proxyListenPort} />
+            </label>
+          </div>
+        {/if}
+      {/if}
+
+      {#if firstTimeOn}
+        <div class="hint-card">
+          <img src="/deploy-assets/server-info.svg" alt="" />
+          <span>Most users should leave this off. Simple mode works great on a spare VPS or home server.</span>
+        </div>
+      {/if}
+
+      {#if buildCredentialsServerUrl()}
+        <label class="field">
+          <span>Final app URL</span>
+          <input readonly value={buildCredentialsServerUrl()} />
+          {#if credentialsUrlWarning(buildCredentialsServerUrl())}
+            <small class="warn-text">{credentialsUrlWarning(buildCredentialsServerUrl())}</small>
+          {/if}
+        </label>
+      {/if}
+
+      <div class="action-row">
+        <button class="secondary" type="button" on:click={onTest} disabled={testing || provisioning}>
+          {testing ? "Preflight…" : "Run Preflight"}
+        </button>
+        {#if testing && (testProgressTitle || testProgressDetail)}
+          <div class="action-status" aria-live="polite">
+            {#if testProgressTitle}
+              <span class="action-status-title">{testProgressTitle}</span>
+            {/if}
+            {#if testProgressDetail}
+              <span class="action-status-detail">{maskDemoText(testProgressDetail)}</span>
+            {/if}
+          </div>
         {/if}
       </div>
-    </div>
+    </section>
 
-    <div class="actions">
-      <button class="secondary" type="button" on:click={onTest} disabled={testing || provisioning || checkingRequirements || missingRequirements.length > 0}>
-        {testing ? "Testing…" : "Test Connection"}
-      </button>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>Server Secrets</h2>
-    <label class="field">
-      <span>Server address for credentials</span>
-      <input placeholder="http:// your server IP is most common" bind:value={credentialsServerUrl} />
-      <span class="hint">Most people use http with an IP address. https or a domain is optional.</span>
-    </label>
-    <div class="row spaced">
-      <label class="field grow">
-        <span class="label-row">
-          <span>Service account key (JSON)</span>
-          <a class="help-link" href="/service-account-help">Where to get this?</a>
+    <section class="panel">
+      <h2>Files & Secrets</h2>
+      <label class="field">
+        <span class="field-label">
+          Service account key (JSON)
+          <a class="help-link" href="/service-account-help">
+            <span>Where to get this?</span>
+            <img src="/deploy-assets/server-external-link.svg" alt="" />
+          </a>
         </span>
-        <input readonly placeholder="Choose service_account_key.json" bind:value={serviceAccountKeyPath} />
+        <div class="field-row">
+          <input readonly placeholder="Choose service_account_key.json" value={maskDemoText(serviceAccountKeyPath)} />
+          <button class="ghost" type="button" on:click={pickServiceAccountKey}>Choose File</button>
+        </div>
       </label>
-      <button class="ghost" type="button" on:click={pickServiceAccountKey}>Choose File</button>
-    </div>
-    <div class="row spaced">
-      <label class="field grow">
-        <span>User credentials QR code</span>
-        <input readonly placeholder="Choose user_credentials_qr.png" bind:value={userCredentialsQrPath} />
+
+      <label class="field">
+        <span>Save user credentials QR code to</span>
+        <div class="field-row">
+          <input readonly placeholder="Choose where to save user_credentials_qr.png" value={maskDemoText(userCredentialsQrPath)} />
+          <button class="ghost" type="button" on:click={pickUserCredentialsQrSave}>Choose Path</button>
+        </div>
       </label>
-      <button class="ghost" type="button" on:click={pickUserCredentialsQrSave}>Choose Save Path</button>
-    </div>
-    <label class="toggle" style="margin-top:12px;"><input type="checkbox" bind:checked={enableAutoUpdater} /><span>Enable auto-updater service</span></label>
-    <label class="toggle" style="margin-top:12px;">
-      <input type="checkbox" bind:checked={overwriteInstall} />
-      <span>Overwrite existing install (removes /opt/secluso first)</span>
-    </label>
-  </section>
 
-  {#if errorMsg}<div class="alert error">{errorMsg}</div>{/if}
+      <label class="switch-row">
+        <input type="checkbox" bind:checked={enableAutoUpdater} />
+        <span>Enable auto-updater service</span>
+      </label>
 
-  <div class="actions bottom">
-    <button class="primary" type="button" on:click={onProvision} disabled={provisioning || testing || checkingRequirements || missingRequirements.length > 0}>
+      <label class="switch-row">
+        <input type="checkbox" bind:checked={overwriteInstall} />
+        <span>Overwrite existing install</span>
+      </label>
+    </section>
+
+    {#if errorMsg}
+      <div class="alert error">{maskDemoText(errorMsg)}</div>
+    {/if}
+
+    <button class="primary" type="button" on:click={onProvision} disabled={provisioning || testing}>
       {provisioning ? "Provisioning…" : "Provision Server"}
+      <img src="/deploy-assets/server-button-arrow.svg" alt="" />
     </button>
-  </div>
+  </section>
 </main>
 
 <style>
-/* reuse the same styles as other pages */
-.wrap { max-width: 980px; margin: 0 auto; padding: 20px 20px 60px; }
-.topbar { display: grid; grid-template-columns: 120px 1fr 120px; align-items: center; gap: 12px; margin: 8px 0 18px; }
-.topbar h1 { text-align: center; margin: 0; font-size: 1.6rem; }
-.spacer { width: 100%; }
-.cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.card { background: #fff; border: 1px solid #e7e7e7; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 6px 22px rgba(0,0,0,0.06); }
-.card h2 { margin: 0 0 10px 0; font-size: 1.15rem; }
-.field { display: flex; flex-direction: column; gap: 6px; }
-.field span { color: #333; font-weight: 600; }
-.field input, .field textarea { padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd; background: #fff; font-size: 0.98rem; }
-.inline-options { display: flex; gap: 16px; flex-wrap: wrap; }
-.toggle, .radio { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
-.toggle input, .radio input { transform: translateY(1px); }
-.row { display: flex; gap: 10px; align-items: end; }
-.row.spaced { margin-top: 14px; }
-.grow { flex: 1; }
-.label-row { display: flex; align-items: center; gap: 10px; }
-.help-link { font-size: 0.9rem; color: #396cd8; text-decoration: none; }
-.help-link:hover { text-decoration: underline; }
-.toggle-card { cursor: pointer; }
-.requirements h2 { margin: 0 0 10px 0; }
-.req-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
-.req-item { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; }
-.req-name { font-weight: 600; }
-.req-status.missing { color: #b91c1c; font-weight: 700; font-size: 0.92rem; }
-.req-detail { grid-column: 1 / -1; color: #666; font-size: 0.9rem; }
-.req-steps { margin: 6px 0 10px; padding-left: 18px; color: #555; }
-.req-steps li { margin: 4px 0; }
-.req-links { display: flex; flex-wrap: wrap; gap: 10px; }
-.req-links a { color: #396cd8; text-decoration: none; font-size: 0.95rem; }
-.req-links a:hover { text-decoration: underline; }
-button { border: 1px solid #d7d7d7; background: #fff; color: #111; padding: 10px 14px; border-radius: 10px; cursor: pointer; }
-button:hover { border-color: #c6c6c6; }
-button.primary { background: #396cd8; color: #fff; border-color: #396cd8; }
-button.primary:hover { filter: brightness(1.05); }
-button.secondary { background: #f6f6f6; }
-button.ghost { background: #f6f6f6; }
-button:disabled { opacity: .6; cursor: not-allowed; }
-.back { justify-self: start; }
-.actions { margin-top: 10px; display: flex; gap: 12px; align-items: center; }
-.actions.bottom { margin-top: 16px; }
-.status { color: #444; }
-.hint { margin-top: 8px; color: #0f172a; font-size: 0.9rem; font-weight: 700; }
-.alert { padding: 10px 12px; border-radius: 10px; border: 1px solid; }
-.alert.error { background: #fff4f4; border-color: #ffd6d6; color: #9a1b1b; }
-.toggle {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 10px;
-  border: 1px solid #e6e6e6;
-  border-radius: 10px;
-  background: #fff;
-  font-size: 0.9rem;
-  color: #111;
-}
-.toggle input { transform: translateY(1px); }
-.quick-steps { margin: 6px 0 0; padding-left: 20px; color: #555; }
-.quick-steps li { margin: 4px 0; }
-.overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(2, 6, 23, 0.55);
-  display: grid;
-  place-items: center;
-  z-index: 30;
-}
-.modal {
-  width: min(420px, 90vw);
-  background: #fff;
-  border: 1px solid #e7e7e7;
-  border-radius: 16px;
-  padding: 18px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
-}
-.modal.ok { border-color: #b7f5d6; }
-.modal.error { border-color: #ffd6d6; }
-.modal-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 6px; color: #0f172a; }
-.modal-body { color: #475569; margin-bottom: 14px; }
-.modal-btn {
-  appearance: none;
-  border: 1px solid #d7d7d7;
-  background: #fff;
-  color: #111;
-  border-radius: 10px;
-  padding: 10px 14px;
-  cursor: pointer;
-}
-.modal-btn:hover { border-color: #c6c6c6; }
-@media (max-width: 860px) { .grid-3 { grid-template-columns: 1fr; } .topbar { grid-template-columns: 1fr auto; } .topbar h1 { text-align:left; } }
-@media (prefers-color-scheme: dark) {
-  .card { background: #121212; border-color: #2a2a2a; box-shadow: 0 6px 22px rgba(0,0,0,0.4); }
-  .field input, .field textarea { background: #0f0f0f; border-color: #2a2a2a; color: #f1f1f1; }
-  .toggle input, .radio input { color: #f1f1f1; }
-  button { background: #1a1a1a; color: #f1f1f1; border-color: #2a2a2a; }
-  button.primary { background: #396cd8; border-color: #396cd8; color: #fff; }
-  button.secondary { background: #1a1a1a; }
-  button.ghost { background: #141414; }
-  .status { color: #dedede; }
-  .alert.error { background: #2b1414; border-color: #5a2a2a; color: #ffbdbd; }
-  .toggle { background: #111; border-color: #2a2a2a; color: #f1f1f1; }
-  .quick-steps { color: #d3d3d3; }
-  .modal { background: #121212; border-color: #2a2a2a; box-shadow: 0 20px 60px rgba(0,0,0,0.45); }
-  .modal-title { color: #f8fafc; }
-  .modal-body { color: #cbd5f5; }
-  .modal-btn { background: #1a1a1a; color: #f1f1f1; border-color: #2a2a2a; }
-}
+  :global(body) {
+    margin: 0;
+    background: #050608;
+    color: #f5f7fb;
+    font-family: Inter, "Segoe UI", sans-serif;
+  }
+
+  .page {
+    min-height: 100vh;
+    position: relative;
+    overflow: hidden;
+    padding-bottom: 72px;
+  }
+
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(780px 420px at 50% 132px, rgba(255, 255, 255, 0.028), transparent 68%),
+      linear-gradient(180deg, rgba(5, 6, 8, 0.98), #050608 46%);
+  }
+
+  .appbar {
+    height: 57px;
+    margin-bottom: 32px;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgba(3, 3, 3, 0.9);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  }
+
+  .frame {
+    position: relative;
+    z-index: 1;
+    max-width: 528px;
+    margin: 0 auto;
+    padding: 24px 24px 0;
+    box-sizing: border-box;
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+
+  .back {
+    border: none;
+    padding: 0;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.4);
+    cursor: pointer;
+    font-size: 13px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 19.5px;
+  }
+
+  .back img {
+    width: 14px;
+    height: 14px;
+    display: block;
+  }
+
+  .tips-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 11px;
+    line-height: 16.5px;
+  }
+
+  .tips-switch {
+    position: relative;
+    width: 24px;
+    height: 13.8px;
+    flex: 0 0 auto;
+  }
+
+  .tips-switch input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .tips-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    box-sizing: border-box;
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease;
+  }
+
+  .tips-track::after {
+    content: "";
+    position: absolute;
+    top: 0.9px;
+    left: 0.9px;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: #030303;
+    transition: transform 140ms ease;
+  }
+
+  .tips-switch input:checked + .tips-track {
+    background: #2b7fff;
+    border-color: transparent;
+  }
+
+  .tips-switch input:checked + .tips-track::after {
+    transform: translateX(10.25px);
+  }
+
+  .switch-row input {
+    appearance: none;
+    width: 28.8px;
+    height: 16.56px;
+    margin: 0;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.05);
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .action-row {
+    margin-top: 20px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  .action-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .action-status-title {
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 600;
+  }
+
+  .action-status-detail {
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 11px;
+    line-height: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .switch-row input::after {
+    content: "";
+    position: absolute;
+    top: 1.08px;
+    left: 0;
+    width: 14.4px;
+    height: 14.4px;
+    border-radius: 999px;
+    background: #030303;
+    transition: transform 120ms ease;
+  }
+
+  .switch-row input:checked {
+    background: #00bc7d;
+  }
+
+  .switch-row input:checked::after {
+    transform: translateX(12.5px);
+  }
+
+  .step-pill {
+    display: inline-flex;
+    align-items: center;
+    height: 19px;
+    padding: 0 8px;
+    border-radius: 14px;
+    background: rgba(0, 188, 125, 0.1);
+    color: #00d492;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+  }
+
+  .hero {
+    position: relative;
+    min-height: 121px;
+    margin-top: 14px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 24px;
+    line-height: 32px;
+    font-weight: 600;
+  }
+
+  .hero p {
+    margin: 10px 0 0;
+    max-width: 512.75px;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 14px;
+    line-height: 22.75px;
+  }
+
+  .hero-art {
+    position: absolute;
+    top: -12px;
+    right: -16px;
+    width: 160px;
+    height: 160px;
+  }
+
+  .panel {
+    margin-top: 32px;
+    padding: 16px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .help-link {
+    color: #4f90ff;
+    text-decoration: none;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    white-space: nowrap;
+  }
+
+  .help-link img {
+    width: 12px;
+    height: 12px;
+    display: block;
+  }
+
+  h2 {
+    margin: 0 0 20px;
+    font-size: 13px;
+    line-height: 19.5px;
+    font-weight: 600;
+  }
+
+  .muted {
+    margin: 0;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 12px;
+    line-height: 19.5px;
+  }
+
+  code {
+    padding: 1px 5px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    color: rgba(255, 255, 255, 0.82);
+  }
+
+  .label {
+    margin: 24px 0 10px;
+    color: rgba(255, 255, 255, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 11px;
+    line-height: 16.5px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .field-wide { grid-column: 1 / -1; }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    margin-top: 18px;
+  }
+
+  .field > span,
+  .field-label {
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 11px;
+    line-height: 16.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .field-row {
+    display: flex;
+    gap: 9px;
+  }
+
+  input,
+  textarea {
+    width: 100%;
+    min-width: 0;
+    padding: 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.03);
+    color: rgba(255, 255, 255, 0.9);
+    font: inherit;
+    box-sizing: border-box;
+  }
+
+  input {
+    height: 41.5px;
+    font-size: 13px;
+    line-height: 19.5px;
+  }
+
+  textarea {
+    min-height: 110px;
+    resize: vertical;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: rgba(255, 255, 255, 0.28);
+  }
+
+  .pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .choice {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.03);
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+
+  .choice img {
+    width: 14px;
+    height: 14px;
+    display: block;
+  }
+
+  .choice.selected {
+    border-color: rgba(0, 188, 125, 0.3);
+    background: rgba(0, 188, 125, 0.15);
+    color: #00d492;
+  }
+
+  .choice input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .switch-divider {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .switch-row {
+    display: flex;
+    width: 100%;
+    min-height: 28px;
+    padding-block: 2px;
+    align-items: center;
+    gap: 12px;
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 12px;
+    line-height: 18px;
+    box-sizing: border-box;
+  }
+
+  .switch-row span {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .panel > .switch-row {
+    margin-top: 14px;
+  }
+
+  .switch-row + .switch-row {
+    margin-top: 14px;
+  }
+
+  .hint-card {
+    margin-top: 16px;
+    min-height: 65px;
+    padding: 14px 12px 12px 38px;
+    border-radius: 16px;
+    border: 1px solid rgba(0, 188, 125, 0.1);
+    background: rgba(0, 188, 125, 0.05);
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 12px;
+    line-height: 19.5px;
+    position: relative;
+    box-sizing: border-box;
+  }
+
+  .hint-card img {
+    position: absolute;
+    left: 12px;
+    top: 14px;
+    width: 16px;
+    height: 16px;
+    display: block;
+  }
+
+  .warn-text {
+    margin-top: 2px;
+    color: #fbbf24;
+    font-size: 12px;
+  }
+
+  button {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.84);
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .ghost,
+  .secondary {
+    padding: 0 16px;
+    height: 36px;
+    border-radius: 16px;
+    white-space: nowrap;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .field-row .ghost {
+    min-width: 100px;
+  }
+
+  .secondary {
+    margin-top: 16px;
+    width: fit-content;
+    min-width: 112px;
+    max-width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+  }
+
+  .primary {
+    width: 100%;
+    margin-top: 40px;
+    height: 45px;
+    border-radius: 20px;
+    border: none;
+    background: #00bc7d;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }
+
+  .primary img {
+    width: 16px;
+    height: 16px;
+    display: block;
+  }
+
+  button:disabled {
+    opacity: 0.56;
+    cursor: not-allowed;
+  }
+
+  .alert {
+    margin-top: 18px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(248, 113, 113, 0.24);
+    background: rgba(127, 29, 29, 0.25);
+    color: #fecaca;
+    font-size: 14px;
+  }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(2, 6, 23, 0.62);
+    display: grid;
+    place-items: center;
+    z-index: 30;
+  }
+
+  .modal {
+    width: min(420px, 90vw);
+    background: #0a0c11;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  }
+
+  .modal.ok { border-color: rgba(18, 216, 159, 0.24); }
+  .modal.error { border-color: rgba(248, 113, 113, 0.24); }
+  .modal-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  .modal-body { color: rgba(255, 255, 255, 0.64); margin-bottom: 14px; }
+  .modal-btn { padding: 10px 14px; border-radius: 10px; }
+
+  @media (max-width: 640px) {
+    .appbar-inner,
+    .frame { padding-inline: 14px; }
+    .hero {
+      min-height: 0;
+      padding-right: 112px;
+    }
+    .hero-art { width: 112px; height: 112px; top: -2px; right: -6px; }
+    .grid { grid-template-columns: 1fr; }
+    .field-row { flex-direction: column; }
+    .secondary,
+    .field-row .ghost { width: 100%; }
+  }
 </style>

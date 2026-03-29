@@ -1,33 +1,41 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { openExternalUrl } from "$lib/api";
+  import { onMount, tick } from "svelte";
+  import AppHeader from "$lib/components/AppHeader.svelte";
 
-  const STORAGE_KEY = "secluso-dev-settings";
   const FIRST_TIME_KEY = "secluso-first-time";
-  let devModeOn = false;
-  let firstTimeOn = false;
+  const homeBackdropFill = "/deploy-assets/home-backdrop-fill-latest.svg";
+  const homeMark = "/deploy-assets/home-logo.jpeg";
+  const homeSignal = "/deploy-assets/home-signal-latest.svg";
+  const homeChipTime = "/deploy-assets/home-chip-time-latest.svg";
+  const homeChipE2ee = "/deploy-assets/home-chip-e2ee-latest.svg";
+  const homeFirstTime = "/deploy-assets/home-first-time-latest.svg";
+  const homeStepOneBg = "/deploy-assets/home-step-1-bg-latest.svg";
+  const homeStepTwoBg = "/deploy-assets/home-step-2-bg-latest.svg";
+  const homeStepArrow = "/deploy-assets/home-step-arrow-latest.svg";
+  const homeStepOneIcon = "/deploy-assets/home-step-1-icon-latest.svg";
+  const homeStepTwoIcon = "/deploy-assets/home-step-2-icon-latest.svg";
 
-  onMount(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as { enabled?: boolean };
-      devModeOn = !!parsed.enabled;
-    } catch {
-      devModeOn = false;
-    }
-  });
+  let firstTimeOn = false;
+  let helpPanel: HTMLElement | null = null;
 
   onMount(() => {
     const raw = localStorage.getItem(FIRST_TIME_KEY);
-    if (raw === null) return;
+    if (raw === null) {
+      firstTimeOn = false;
+      return;
+    }
     firstTimeOn = raw === "true";
   });
 
-  function toggleFirstTime() {
+  async function toggleFirstTime() {
     firstTimeOn = !firstTimeOn;
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
+
+    if (!firstTimeOn) return;
+
+    await tick();
+    helpPanel?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
   function setHelpRef() {
@@ -37,377 +45,495 @@
       // best effort only
     }
   }
-
-  function isInteractiveTarget(target: EventTarget | null): boolean {
-    return target instanceof Element && !!target.closest("a, button, input, label, textarea, select");
-  }
-
-  function onToggleCardClick(event: MouseEvent) {
-    if (isInteractiveTarget(event.target)) return;
-    toggleFirstTime();
-  }
-
-  function onToggleKey(event: KeyboardEvent) {
-    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
-      event.preventDefault();
-      toggleFirstTime();
-    }
-  }
-
-  async function openExternal(url: string) {
-    try {
-      await openExternalUrl(url);
-    } catch {
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
-  }
-
 </script>
 
-<main class="container">
-  <div class="titlebar">
-    <div class="spacer"></div>
-    <h1>Secluso Deploy v1.0.0</h1>
-    <div class="actions">
-      <span class="dev-dot {devModeOn ? 'on' : 'off'}" title={devModeOn ? "Developer mode on" : "Developer mode off"}></span>
-      <a class="settings-btn" href="/settings">Settings</a>
-    </div>
-  </div>
-  <p class="subtitle">Get your encrypted camera system online in two easy steps.</p>
-  <section class="welcome">
-    <div class="welcome-card">
-      <div class="welcome-copy">
-        <h2>Welcome to Secluso</h2>
-        <p class="muted">Achieve true privacy with an easy, non-compromising setup. Follow the steps below to get everything online.</p>
+<main class="page">
+  <div class="page-backdrop"></div>
+  <AppHeader />
+
+  <section class="home-frame">
+    <div class="hero">
+      <div class="hero-outline" aria-hidden="true">
+        <img src={homeBackdropFill} alt="" />
       </div>
-      <div class="store-links">
-        <a class="store-btn" href="https://apps.apple.com/app/id0000000000" on:click|preventDefault={() => openExternal("https://apps.apple.com/app/id0000000000")}>
-          <span class="store-icon">A</span>
-          <span>App Store (placeholder)</span>
-        </a>
-        <a class="store-btn" href="https://play.google.com/store/apps/details?id=com.secluso.mobile" on:click|preventDefault={() => openExternal("https://play.google.com/store/apps/details?id=com.secluso.mobile")}>
-          <span class="store-icon">G</span>
-          <span>Google Play (placeholder)</span>
-        </a>
+
+      <div class="hero-mark-shell">
+        <img class="hero-mark" src={homeMark} alt="" />
+        <span class="hero-signal"><img src={homeSignal} alt="" /></span>
       </div>
+
+      <h1>Secluso Deploy</h1>
+
+      <div class="hero-meta">
+        <span>Private cameras in</span>
+        <span class="meta-chip meta-chip--time"><img src={homeChipTime} alt="" />2 min</span>
+        <span>with</span>
+        <span class="meta-chip meta-chip--e2ee"><img src={homeChipE2ee} alt="" />E2EE</span>
+      </div>
+
+      <button class="first-time" type="button" aria-pressed={firstTimeOn} on:click={toggleFirstTime}>
+        <img src={homeFirstTime} alt="" />
+        <span>First time?</span>
+        <span class:enabled={firstTimeOn} class="first-time__switch">
+          <i></i>
+        </span>
+      </button>
     </div>
+
+    <div class="section-label">Setup Steps</div>
+
+    <a class="step-card" href="/image">
+      <img class="step-card__bg" src={homeStepOneBg} alt="" />
+      <span class="step-card__icon step-card__icon--one"><img src={homeStepOneIcon} alt="" /></span>
+      <span class="step-card__badge step-card__badge--one">1</span>
+      <div class="step-card__copy">
+        <div class="step-card__title-row">
+          <h2>Raspberry Pi</h2>
+          <span>Build image</span>
+        </div>
+        <p>Generate a Pi OS image and camera pairing QR code.</p>
+      </div>
+      <span class="step-card__arrow"><img src={homeStepArrow} alt="" /></span>
+    </a>
+
+    <a class="step-card" href="/server-ssh">
+      <img class="step-card__bg" src={homeStepTwoBg} alt="" />
+      <span class="step-card__icon step-card__icon--two"><img src={homeStepTwoIcon} alt="" /></span>
+      <span class="step-card__badge step-card__badge--two">2</span>
+      <div class="step-card__copy">
+        <div class="step-card__title-row">
+          <h2>Server</h2>
+          <span>Deploy via SSH</span>
+        </div>
+        <p>Install Secluso on any Linux machine via SSH.</p>
+      </div>
+      <span class="step-card__arrow"><img src={homeStepArrow} alt="" /></span>
+    </a>
+
+    {#if firstTimeOn}
+      <section class="help-panel" bind:this={helpPanel}>
+        <ol class="quick-steps">
+          <li>Install the Secluso app on your phone.</li>
+          <li>Build the Raspberry Pi image and keep the camera QR code.</li>
+          <li>Provision your Linux server and save the user credentials QR code.</li>
+          <li>Scan the server QR code in the app, then scan the camera QR code.</li>
+        </ol>
+
+        <div class="help-links">
+          <a class="help-link" href="/hardware-help" on:click={setHelpRef}>Recommended hardware guide</a>
+          <a class="help-link" href="/ionos-help" on:click={setHelpRef}>Ionos VPS setup guide</a>
+        </div>
+      </section>
+    {/if}
   </section>
-
-  {#if firstTimeOn}
-    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
-      <div class="cardhead">
-        <h3>First time?</h3>
-        <label class="toggle">
-          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>Show step-by-step guidance</span>
-        </label>
-      </div>
-      <p class="muted">No scripts or command line steps needed.</p>
-      <ol class="quick-steps">
-        <li>Install the Secluso app from your app store.</li>
-        <li>Build the Raspberry Pi image and save the camera QR code.</li>
-        <li>Set up your server and save the server QR code.</li>
-        <li>Open the app and scan the server QR code, then the camera QR code.</li>
-      </ol>
-      <p class="muted">Need a server? A low cost option is Ionos VPS for around $2 per month. Just copy the login details from your provider and the app handles the setup. We are not affiliated with Ionos.</p>
-      <div class="help-links">
-        <a class="help-link" href="/hardware-help" on:click={setHelpRef}>Recommended hardware guide</a>
-        <a class="help-link" href="/ionos-help" on:click={setHelpRef}>Ionos VPS setup guide</a>
-      </div>
-    </section>
-  {:else}
-    <section class="card toggle-card" role="button" tabindex="0" aria-pressed={firstTimeOn} on:click={onToggleCardClick} on:keydown={onToggleKey}>
-      <div class="cardhead">
-        <h3>First time?</h3>
-        <label class="toggle">
-          <input type="checkbox" checked={firstTimeOn} on:change={toggleFirstTime} />
-          <span>Show step-by-step guidance</span>
-        </label>
-      </div>
-      <p class="muted">Turn on the toggle to see the step-by-step guide.</p>
-    </section>
-  {/if}
-
-  <!-- step a -->
-  <section class="step">
-    <div class="stephead">
-      <h2 class="steptitle">
-        <span class="stepkicker">Step A</span>
-        <span class="stepname">Raspberry Pi</span>
-      </h2>
-      <p class="muted">Flash a fresh image <em>or</em> to an SD card to prepare your Pi.</p>
-    </div>
-
-    <div class="choices">
-      <a class="card" href="/image">
-        <h3>Build Raspberry&nbsp;Pi Image</h3>
-        <p>
-          Generate a Pi OS image with the camera secret QR code, packages, and the auto-updater.
-          Outputs a flash-ready <code>.img</code> for Raspberry Pi Imager and the camera secret QR code.
-        </p>
-        <ul class="details">
-          <li>No device required during setup</li>
-          <li>Deterministic config & pinned packages</li>
-          <li>Ideal for new SD cards</li>
-        </ul>
-        <span class="card-cta">Start Image Builder &rarr;</span>
-      </a>
-    </div>
-  </section>
-
-  <!-- step b -->
-  <section class="step">
-    <div class="stephead">
-      <h2 class="steptitle">
-        <span class="stepkicker">Step B</span>
-        <span class="stepname">Server</span>
-      </h2>
-      <p class="muted">The Secluso server is provisioned via SSH. This sets it up fully to work with your Raspberry Pi camera.</p>
-    </div>
-
-    <div class="choices single">
-      <a class="card" href="/server-ssh">
-        <h3>Provision Server (SSH)</h3>
-        <p>
-          Install the Secluso server as a binary or Docker image, setup services, install necessary packages, enable the auto-updater,
-          and optionally harden packages/services.
-        </p>
-        <ul class="details">
-          <li>Linux server with SSH access</li>
-          <li>Binary or Docker (your choice)</li>
-          <li>Auto-updater & hardening toggles</li>
-        </ul>
-        <span class="card-cta">Connect to Server &rarr;</span>
-      </a>
-    </div>
-  </section>
-
-  <p class="footnote">
-    <strong>Tip:</strong> New device? Start with <em>Build Raspberry Pi Image</em>.
-    Already running? Use <em>Provision Existing Pi</em>.
-  </p>
 </main>
 
 <style>
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+  :global(body) {
+    margin: 0;
+    background: #030303;
+    color: #fff;
+    font-family: Inter, "Segoe UI", sans-serif;
+  }
 
-.container {
-  margin: 0 auto;
-  padding: 7vh 24px 10vh;
-  max-width: 1040px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
+  .page {
+    min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
+  }
 
-/* headings */
-.titlebar {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 12px;
-}
-.titlebar .spacer { width: 100%; }
-h1 { text-align: center; margin: 0 0 4px 0; font-size: 2rem; }
-.actions { display: flex; justify-content: flex-end; }
-.settings-btn {
-  border: 1px solid #d8d8d8;
-  background: #ffffff;
-  color: #111;
-  padding: 8px 12px;
-  border-radius: 10px;
-  cursor: pointer;
-  text-decoration: none;
-}
-.settings-btn:hover { border-color: #c4c4c4; }
-.dev-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  border: 1px solid #d1d5db;
-  background: #ef4444;
-  display: inline-block;
-}
-.dev-dot.on { background: #22c55e; border-color: #16a34a; }
-.dev-dot.off { background: #ef4444; border-color: #dc2626; }
+  .page-backdrop {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(760px 320px at 50% 102px, rgba(255, 255, 255, 0.015), transparent 68%),
+      #030303;
+  }
 
-.subtitle {
-  text-align: center;
-  margin: 0 0 18px 0;
-  color: #333;
-}
+  .home-frame {
+    --frame-pad: 24px;
+    width: min(576px, calc(100% - 16px));
+    margin: 0 auto;
+    padding: 0 var(--frame-pad) 84px;
+    box-sizing: border-box;
+    position: relative;
+  }
 
-.welcome { margin-bottom: 18px; }
-.welcome-card {
-  display: flex;
-  gap: 18px;
-  align-items: center;
-  justify-content: space-between;
-  border-radius: 16px;
-  padding: 18px;
-  background: linear-gradient(135deg, #f7f8fb, #ffffff);
-  border: 1px solid #e6e6e6;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-}
-.welcome-copy h2 { margin: 0 0 8px; font-size: 1.25rem; }
-.store-links { display: flex; gap: 12px; flex-wrap: wrap; }
-.store-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  border: 1px solid #dfe3ea;
-  background: #fff;
-  text-decoration: none;
-  color: #1f2937;
-  font-weight: 600;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-}
-.store-btn:hover { border-color: #c9d3ea; }
-.store-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  background: #396cd8;
-  color: #fff;
-  font-size: 0.85rem;
-}
+  .hero {
+    min-height: 240px;
+    width: calc(100% + (var(--frame-pad) * 2));
+    margin-left: calc(var(--frame-pad) * -1);
+    position: relative;
+    text-align: center;
+  }
 
-.step { margin-top: 8px; }
+  .hero-outline {
+    position: absolute;
+    left: 50%;
+    top: 62px;
+    width: 760px;
+    height: 172.5px;
+    transform: translateX(-50%);
+    overflow: hidden;
+    pointer-events: none;
+    -webkit-mask-image: url("/deploy-assets/home-backdrop-mask-latest.svg");
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-size: 100% 100%;
+    -webkit-mask-mode: alpha;
+    mask-image: url("/deploy-assets/home-backdrop-mask-latest.svg");
+    mask-repeat: no-repeat;
+    mask-size: 100% 100%;
+    mask-mode: alpha;
+  }
 
-.stephead {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-  margin-bottom: 10px;
-}
+  .hero-outline img {
+    position: absolute;
+    left: 50%;
+    top: -124px;
+    width: 440px;
+    height: 440px;
+    transform: translateX(-50%);
+    display: block;
+  }
 
-.steptitle {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin: 0;
-}
+  .hero-mark-shell {
+    width: 56px;
+    height: 56px;
+    margin: 56px auto 16px;
+    position: relative;
+    border-radius: 16px;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.1),
+      0 20px 25px -5px rgba(43, 127, 255, 0.1),
+      0 8px 10px -6px rgba(43, 127, 255, 0.1);
+  }
 
-.stepkicker {
-  font-weight: 700;
-  font-size: 0.9rem;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: #4a63b8;
-}
+  .hero-mark {
+    width: 56px;
+    height: 56px;
+    display: block;
+    border-radius: 16px;
+  }
 
-.stepname {
-  font-size: 1.3rem;
-  font-weight: 700;
-  color: #0f0f0f;
-}
+  .hero-signal {
+    width: 20px;
+    height: 20px;
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: #00bc7d;
+    box-shadow: 0 0 0 2px #030303;
+  }
 
-.muted { color: #666; margin: 0; }
+  .hero-signal img {
+    width: 10px;
+    height: 10px;
+    display: block;
+  }
 
-/* cards and layout */
-.choices {
-  display: grid;
-  grid-template-columns: repeat( auto-fit, minmax(300px, 1fr) );
-  gap: 18px;
-}
-.choices.single { grid-template-columns: 1fr; }
+  h1 {
+    margin: 0;
+    color: #fff;
+    font-size: 30px;
+    font-weight: 700;
+    line-height: 36px;
+    letter-spacing: -0.75px;
+  }
 
-.card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border-radius: 14px;
-  padding: 18px;
-  background: #ffffff;
-  color: inherit;
-  text-decoration: none;
-  border: 1px solid #e6e6e6;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
-}
-.card:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,0,0,0.10); border-color: #d8d8d8; }
+  .hero-meta {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 13px;
+    line-height: 19.5px;
+  }
 
-.card:active { transform: translateY(0); }
+  .meta-chip {
+    height: 22.5px;
+    padding: 0 8px;
+    border-radius: 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 16.5px;
+  }
 
-.card h3 { margin: 0; font-size: 1.1rem; }
-.card p { margin: 0; color: #444; }
-.cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.toggle-card { cursor: pointer; }
+  .meta-chip img {
+    width: 12px;
+    height: 12px;
+    display: block;
+  }
 
-.quick-steps {
-  margin: 6px 0 0;
-  padding-left: 20px;
-  color: #555;
-}
-.quick-steps li { margin: 4px 0; }
+  .meta-chip--time {
+    color: #51a2ff;
+    background: rgba(43, 127, 255, 0.1);
+    border: 1px solid rgba(43, 127, 255, 0.2);
+  }
 
-.help-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
-.help-link { font-size: 0.95rem; color: #396cd8; text-decoration: none; }
-.help-link:hover { text-decoration: underline; }
+  .meta-chip--e2ee {
+    color: #00d492;
+    background: rgba(0, 188, 125, 0.1);
+    border: 1px solid rgba(0, 188, 125, 0.2);
+  }
 
-.details { margin: 4px 0 0; padding-left: 18px; color: #555; }
-.details li { margin: 2px 0; }
+  .first-time {
+    margin: 39px auto 0;
+    width: 141.73px;
+    height: 30.5px;
+    padding: 0 13px 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.03);
+    color: rgba(255, 255, 255, 0.4);
+    font: inherit;
+    font-size: 11px;
+    line-height: 16.5px;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
 
-.card-cta { margin-top: auto; font-weight: 600; color: #396cd8; }
+  .first-time img {
+    width: 14px;
+    height: 14px;
+    display: block;
+    flex: 0 0 auto;
+  }
 
-/* footer */
-.footnote {
-  margin: 12px auto 0;
-  text-align: center;
-  color: #666;
-  max-width: 860px;
-  font-size: 0.98rem;
-}
+  .first-time__switch {
+    margin-left: auto;
+    width: 32px;
+    height: 16px;
+    padding: 2px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    box-sizing: border-box;
+    transition: background 140ms ease;
+  }
 
+  .first-time__switch i {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: #fff;
+    display: block;
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.1),
+      0 1px 2px -1px rgba(0, 0, 0, 0.1);
+    transition: transform 140ms ease;
+  }
 
-/* dark mode */
-@media (prefers-color-scheme: dark) {
-  :root { color: #f6f6f6; background-color: #2f2f2f; }
-  .stepkicker { color: #7aa7ff; }
-  .stepname { color: #f6f6f6; }
-  .card { background: #111; border-color: #2a2a2a; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
-  .card p, .details, .subtitle, .muted, .footnote { color: #d3d3d3; }
-  a:hover { color: #24c8db; }
-  .settings-btn { background: #111; color: #f6f6f6; border-color: #2a2a2a; }
-  .dev-dot { border-color: #1f2937; }
-  .dev-dot.on { background: #22c55e; border-color: #16a34a; }
-  .dev-dot.off { background: #ef4444; border-color: #dc2626; }
-  .welcome-card { background: linear-gradient(135deg, #10131a, #14171f); border-color: #2a2a2a; }
-  .store-btn { background: #111; border-color: #2a2a2a; color: #f6f6f6; }
-  .store-icon { background: #7aa7ff; color: #0b1020; }
-}
+  .first-time__switch.enabled {
+    background: rgba(0, 188, 125, 0.32);
+  }
 
-.toggle {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 10px;
-  border: 1px solid #e6e6e6;
-  border-radius: 10px;
-  background: #fff;
-  font-size: 0.9rem;
-  color: #111;
-}
-.toggle input { transform: translateY(1px); }
+  .first-time__switch.enabled i {
+    transform: translateX(16px);
+  }
 
-@media (prefers-color-scheme: dark) {
-  .toggle { background: #111; border-color: #2a2a2a; color: #f6f6f6; }
-}
+  .section-label {
+    margin-top: 0;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16.5px;
+    letter-spacing: 0.55px;
+    text-transform: uppercase;
+  }
 
-@media (max-width: 720px) {
-  .welcome-card { flex-direction: column; align-items: flex-start; }
-}
+  .step-card {
+    height: 78px;
+    margin-top: 20px;
+    position: relative;
+    display: block;
+    overflow: hidden;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.02);
+    text-decoration: none;
+    color: inherit;
+  }
+
+  .step-card__bg {
+    width: 128px;
+    height: 128px;
+    position: absolute;
+    right: -24px;
+    bottom: -24px;
+    display: block;
+    pointer-events: none;
+  }
+
+  .step-card__icon {
+    width: 44px;
+    height: 44px;
+    position: absolute;
+    left: 16px;
+    top: 16px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .step-card__icon img {
+    width: 20px;
+    height: 20px;
+    display: block;
+  }
+
+  .step-card__icon--one {
+    background: rgba(43, 127, 255, 0.1);
+  }
+
+  .step-card__icon--two {
+    background: rgba(0, 188, 125, 0.1);
+  }
+
+  .step-card__badge {
+    width: 16px;
+    height: 16px;
+    position: absolute;
+    left: 48px;
+    top: 12px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 13.5px;
+  }
+
+  .step-card__badge--one {
+    background: #2b7fff;
+  }
+
+  .step-card__badge--two {
+    background: #00bc7d;
+  }
+
+  .step-card__copy {
+    padding: 18px 48px 0 76px;
+  }
+
+  .step-card__title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+  }
+
+  .step-card__title-row h2 {
+    margin: 0;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 21px;
+  }
+
+  .step-card__title-row span {
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 11px;
+    line-height: 16.5px;
+  }
+
+  .step-card__copy p {
+    margin: 2px 0 0;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 12px;
+    line-height: 18px;
+  }
+
+  .step-card__arrow {
+    width: 16px;
+    height: 16px;
+    position: absolute;
+    right: 18px;
+    top: 31px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .step-card__arrow img {
+    width: 16px;
+    height: 16px;
+    display: block;
+  }
+
+  .help-panel {
+    margin-top: 24px;
+    padding: 18px 20px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .quick-steps {
+    margin: 0;
+    padding-left: 18px;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 12px;
+    line-height: 18px;
+  }
+
+  .quick-steps li + li {
+    margin-top: 6px;
+  }
+
+  .help-links {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .help-link {
+    color: rgba(81, 162, 255, 0.95);
+    font-size: 12px;
+    line-height: 18px;
+    text-decoration: none;
+  }
+
+  .help-link:hover {
+    text-decoration: underline;
+  }
+
+  @media (max-width: 640px) {
+    .home-frame {
+      width: calc(100% - 16px);
+      --frame-pad: 16px;
+    }
+
+    .hero-outline {
+      width: min(760px, calc(100% + 136px));
+    }
+
+    .hero-meta {
+      gap: 6px;
+    }
+
+    .step-card__copy {
+      padding-right: 40px;
+    }
+
+    .step-card__title-row {
+      flex-wrap: wrap;
+      row-gap: 2px;
+    }
+  }
 </style>

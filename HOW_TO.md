@@ -110,11 +110,11 @@ cd /path-to-secluso/server/
 cargo run --release
 ```
 
-The server binds to 127.0.0.1 by default.
-If you must use HTTP and need the server reachable on the network, run:
+The server binds to 127.0.0.1:8000 by default.
+If you need it reachable on the network, pass an explicit bind address and port:
 
 ```
-cargo run --release --network-type=http
+cargo run --release -- --bind-address=0.0.0.0 --port=8000
 ```
 
 However, the server program might crash.
@@ -123,7 +123,7 @@ Therefore, we suggest using a systemd service to ensure that the server program 
 You can find instructions to do this online, e.g., ([here](https://www.shubhamdipt.com/blog/how-to-create-a-systemd-service-in-linux/)).
 
 Here is an example of what the service file could look like.
-If you need HTTP, add --network-type=http to ExecStart.
+Set the bind address and port directly in ExecStart.
 
 ```
 [Unit]
@@ -132,7 +132,7 @@ Description=secluso_server
 [Service]
 User=your-username
 WorkingDirectory=/absolute-path-to-secluso-source/server/
-ExecStart=/absolute-path-to-cargo-executable/cargo run --release --network-type=https
+ExecStart=/absolute-path-to-cargo-executable/cargo run --release -- --bind-address=127.0.0.1 --port=8000
 Restart=always
 RestartSec=1
 

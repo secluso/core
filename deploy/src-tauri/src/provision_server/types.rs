@@ -8,10 +8,10 @@ pub enum SshAuth {
   Password { password: String },
 
   #[serde(rename = "keyfile")]
-  KeyFile { path: String },
+  KeyFile { path: String, passphrase: Option<String> },
 
   #[serde(rename = "keytext")]
-  KeyText { text: String },
+  KeyText { text: String, passphrase: Option<String> },
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -54,13 +54,21 @@ pub struct ServerSecrets {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct ServerRuntimePlan {
+  pub exposure_mode: String,
+  pub bind_address: String,
+  pub listen_port: u16,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerPlan {
-  pub use_docker: bool,
-  pub protect_packages: bool,
   pub auto_updater: AutoUpdaterPlan,
+  pub runtime: ServerRuntimePlan,
   pub secrets: Option<ServerSecrets>,
   pub overwrite: Option<bool>,
   pub sig_keys: Option<Vec<SigKey>>,
   pub binaries_repo: Option<String>,
   pub github_token: Option<String>,
+  pub manifest_version_override: Option<String>,
 }
