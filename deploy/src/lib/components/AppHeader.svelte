@@ -2,7 +2,7 @@
 <script lang="ts">
   import { openExternalUrl } from "$lib/api";
 
-  export let version = "v0.1.0";
+  export let version = "v1.0.0";
   export let settingsHref = "/settings";
 
   async function openExternal(url: string) {
