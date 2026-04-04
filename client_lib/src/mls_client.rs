@@ -185,7 +185,7 @@ impl MlsClient {
         let file_dir_path = Path::new(&self.file_dir);
         
         let state_dir_path = file_dir_path.join(&self.tag);
-        if !state_dir_path.exists() {
+        if state_dir_path.exists() {
             fs::remove_dir_all(&state_dir_path)?;
             Self::fsync_dir(&file_dir_path)?;
         }
