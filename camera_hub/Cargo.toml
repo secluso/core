@@ -29,9 +29,9 @@ serde-xml-rs = "0.8"
 sha1 = "0.10"
 qrcode = "0.14.1"
 image = "0.25.10"
-openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.0" }
-openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.0" }
-openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.0" }
+openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
+openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
+openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
 retina = "0.4.19"
 tokio = { version = "1.50.0", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
 url = "2.5.8"

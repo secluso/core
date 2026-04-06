@@ -16,7 +16,7 @@ anyhow = "1.0.102"
 flutter_rust_bridge = "=2.11.1"
 serde = "1.0"
 serde_derive = "1.0"
-openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.0" }
+openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
 docopt = "~1.1"
 
 [features]
