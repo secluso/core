@@ -4,7 +4,9 @@ use crate::pi_hub_provision::temp::shared_temp_dir;
 use crate::provision_server::events::{log_line, step_ok, step_start};
 use crate::provision_server::preflight::run_preflight;
 use crate::provision_server::script::remote_provision_script;
-use crate::provision_server::ssh::{connect_ssh, exec_remote_script_streaming, scp_upload_bytes, sudo_prefix};
+use crate::provision_server::ssh::{
+  cleanup_remote_path, connect_ssh, create_remote_temp_dir, exec_remote_script_streaming, scp_upload_bytes, sudo_prefix,
+};
 use crate::provision_server::types::{ServerPlan, ServerSecrets, SshTarget};
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
@@ -30,6 +32,10 @@ struct DownloadedArtifacts {
   server_manifest_version: String,
   server_bytes: Vec<u8>,
   updater_bytes: Vec<u8>,
+}
+
+fn remote_stage_path(stage_dir: &str, name: &str) -> String {
+  format!("{stage_dir}/{name}")
 }
 
 fn normalize_repo(input: &str) -> String {
@@ -187,144 +193,188 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
   }
 
   let mut generated_user_credentials: Option<Vec<u8>> = None;
+  // Give each provisioning run its own remote staging dir.
+  // Installer now reads inputs from one private per-run location instead of fixed top-level temp paths.
+  let remote_stage_dir = create_remote_temp_dir(&sess, "secluso-provision")
+    .context("creating remote staging dir")?;
 
-  step_start(app, run_id, "artifacts", "Downloading verified release binaries");
-  let artifacts = download_verified_artifacts(
-    app,
-    run_id,
-    &owner_repo,
-    &preflight.remote_arch,
-    &sig_keys,
-    plan.github_token.as_deref(),
-  )?;
-  scp_upload_bytes(&sess, "/tmp/secluso-server", 0o755, &artifacts.server_bytes)?;
-  scp_upload_bytes(&sess, "/tmp/secluso-update", 0o755, &artifacts.updater_bytes)?;
-  step_ok(app, run_id, "artifacts");
-
-  // step 2 generate and upload secrets
-  step_start(app, run_id, "secrets", "Preparing runtime secrets");
-  let secrets = plan.secrets.as_ref().context("Missing secrets config")?;
-  let sa_path = PathBuf::from(&secrets.service_account_key_path);
-  let sa = std::fs::read(&sa_path).with_context(|| format!("Missing service account key at {}", sa_path.display()))?;
-  scp_upload_bytes(&sess, "/tmp/service_account_key.json", 0o600, &sa)?;
-
-  if first_install {
-    let work_dir = shared_temp_dir("secluso-server-creds").context("creating temp work dir")?;
-    let work_path = work_dir.path();
-    let sig_keys = plan.sig_keys.as_ref().map(|keys| {
-      keys
-        .iter()
-        .map(|k| crate::pi_hub_provision::model::SigKey {
-          name: k.name.trim().to_string(),
-          github_user: k.github_user.trim().to_string(),
-        })
-        .collect::<Vec<_>>()
-    });
-    generate_user_credentials_only(
+  let provision_result = (|| -> Result<()> {
+    step_start(app, run_id, "artifacts", "Downloading verified release binaries");
+    let artifacts = download_verified_artifacts(
       app,
       run_id,
-      work_path,
-      &secrets.server_url,
       &owner_repo,
-      sig_keys.as_deref(),
+      &preflight.remote_arch,
+      &sig_keys,
       plan.github_token.as_deref(),
     )?;
+    // Keep the uploaded binaries non-executable here.
+    // They only become executable when the remote installer places them into the actual install path.
+    scp_upload_bytes(
+      &sess,
+      &remote_stage_path(&remote_stage_dir, "secluso-server"),
+      0o600,
+      &artifacts.server_bytes,
+    )?;
+    scp_upload_bytes(
+      &sess,
+      &remote_stage_path(&remote_stage_dir, "secluso-update"),
+      0o600,
+      &artifacts.updater_bytes,
+    )?;
+    step_ok(app, run_id, "artifacts");
 
-    let uc_path = work_path.join("user_credentials");
-    let uc = std::fs::read(&uc_path).with_context(|| format!("Missing user credentials at {}", uc_path.display()))?;
-    let credentials_full_path = work_path.join("credentials_full");
-    let credentials_full = std::fs::read(&credentials_full_path)
-      .with_context(|| format!("Missing credentials_full at {}", credentials_full_path.display()))?;
+    // step 2 generate and upload secrets
+    step_start(app, run_id, "secrets", "Preparing runtime secrets");
+    let secrets = plan.secrets.as_ref().context("Missing secrets config")?;
+    let sa_path = PathBuf::from(&secrets.service_account_key_path);
+    let sa = std::fs::read(&sa_path).with_context(|| format!("Missing service account key at {}", sa_path.display()))?;
+    scp_upload_bytes(
+      &sess,
+      &remote_stage_path(&remote_stage_dir, "service_account_key.json"),
+      0o600,
+      &sa,
+    )?;
 
-    let qr_src = work_path.join("user_credentials_qrcode.png");
-    if !qr_src.exists() {
-      bail!("Missing QR code at {}", qr_src.display());
-    }
-    let qr_path = PathBuf::from(&secrets.user_credentials_qr_path);
-    if let Some(parent) = qr_path.parent() {
-      if !parent.as_os_str().is_empty() {
-        std::fs::create_dir_all(parent)?;
+    if first_install {
+      let work_dir = shared_temp_dir("secluso-server-creds").context("creating temp work dir")?;
+      let work_path = work_dir.path();
+      let sig_keys = plan.sig_keys.as_ref().map(|keys| {
+        keys
+          .iter()
+          .map(|k| crate::pi_hub_provision::model::SigKey {
+            name: k.name.trim().to_string(),
+            github_user: k.github_user.trim().to_string(),
+          })
+          .collect::<Vec<_>>()
+      });
+      generate_user_credentials_only(
+        app,
+        run_id,
+        work_path,
+        &secrets.server_url,
+        &owner_repo,
+        sig_keys.as_deref(),
+        plan.github_token.as_deref(),
+      )?;
+
+      let uc_path = work_path.join("user_credentials");
+      let uc = std::fs::read(&uc_path).with_context(|| format!("Missing user credentials at {}", uc_path.display()))?;
+      let credentials_full_path = work_path.join("credentials_full");
+      let credentials_full = std::fs::read(&credentials_full_path)
+        .with_context(|| format!("Missing credentials_full at {}", credentials_full_path.display()))?;
+
+      let qr_src = work_path.join("user_credentials_qrcode.png");
+      if !qr_src.exists() {
+        bail!("Missing QR code at {}", qr_src.display());
       }
-    }
-    std::fs::copy(&qr_src, &qr_path).with_context(|| format!("Saving QR code to {}", qr_path.display()))?;
+      let qr_path = PathBuf::from(&secrets.user_credentials_qr_path);
+      if let Some(parent) = qr_path.parent() {
+        if !parent.as_os_str().is_empty() {
+          std::fs::create_dir_all(parent)?;
+        }
+      }
+      std::fs::copy(&qr_src, &qr_path).with_context(|| format!("Saving QR code to {}", qr_path.display()))?;
 
-    scp_upload_bytes(&sess, "/tmp/user_credentials", 0o600, &uc)?;
-    scp_upload_bytes(&sess, "/tmp/credentials_full", 0o600, &credentials_full)?;
-    generated_user_credentials = Some(uc);
-  } else {
-    log_line(
-      app,
-      run_id,
-      "info",
-      Some("secrets"),
-      "Existing install detected. Leaving the current server credentials unchanged.".to_string(),
-    );
-  }
-  step_ok(app, run_id, "secrets");
-
-  // step 3 run the remote provision script
-  step_start(app, run_id, "remote", "Running remote installer");
-  let mut envs = vec![
-    ("INSTALL_PREFIX", INSTALL_PREFIX.to_string()),
-    ("OWNER_REPO", owner_repo.to_string()),
-    ("SERVER_UNIT", SERVER_UNIT.to_string()),
-    ("UPDATER_SERVICE", UPDATER_SERVICE.to_string()),
-    ("UPDATE_INTERVAL_SECS", UPDATE_INTERVAL_SECS.to_string()),
-    ("BIND_ADDRESS", plan.runtime.bind_address.clone()),
-    ("LISTEN_PORT", plan.runtime.listen_port.to_string()),
-    ("SUDO_CMD", sudo_cmd.clone()),
-    ("ENABLE_UPDATER", if plan.auto_updater.enable { "1".to_string() } else { "0".to_string() }),
-    ("OVERWRITE", if overwrite { "1".to_string() } else { "0".to_string() }),
-    ("FIRST_INSTALL", if first_install { "1".to_string() } else { "0".to_string() }),
-    ("RELEASE_TAG", artifacts.release_tag.clone()),
-    (
-      "SIG_KEYS",
-      sig_keys
-        .iter()
-        .map(|k| format!("{}:{}", k.name.trim(), k.github_user.trim()))
-        .filter(|v| !v.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join(","),
-    ),
-  ];
-  if let Some(token) = plan.github_token.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
-    envs.push(("GITHUB_TOKEN", token));
-  }
-  exec_remote_script_streaming(
-    app,
-    run_id,
-    "remote",
-    &sess,
-    &envs.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>(),
-    sudo_pw,
-    remote_provision_script(),
-  )?;
-
-  step_ok(app, run_id, "remote");
-
-  step_start(app, run_id, "health", "Checking public server health");
-  if first_install {
-    if let Some(uc) = generated_user_credentials.as_ref() {
-      let probe_version = plan
-        .manifest_version_override
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&artifacts.server_manifest_version);
-      verify_public_server_health(app, run_id, &plan, secrets, probe_version, uc)?;
+      scp_upload_bytes(
+        &sess,
+        &remote_stage_path(&remote_stage_dir, "user_credentials"),
+        0o600,
+        &uc,
+      )?;
+      scp_upload_bytes(
+        &sess,
+        &remote_stage_path(&remote_stage_dir, "credentials_full"),
+        0o600,
+        &credentials_full,
+      )?;
+      generated_user_credentials = Some(uc);
     } else {
-      log_line(app, run_id, "warn", Some("health"), "Skipping public health check because generated credentials are unavailable.".to_string());
+      log_line(
+        app,
+        run_id,
+        "info",
+        Some("secrets"),
+        "Existing install detected. Leaving the current server credentials unchanged.".to_string(),
+      );
     }
-  } else {
-    log_line(
+    step_ok(app, run_id, "secrets");
+
+    // step 3 run the remote provision script
+    step_start(app, run_id, "remote", "Running remote installer");
+    let mut envs = vec![
+      ("INSTALL_PREFIX", INSTALL_PREFIX.to_string()),
+      ("OWNER_REPO", owner_repo.to_string()),
+      ("SERVER_UNIT", SERVER_UNIT.to_string()),
+      ("UPDATER_SERVICE", UPDATER_SERVICE.to_string()),
+      ("UPDATE_INTERVAL_SECS", UPDATE_INTERVAL_SECS.to_string()),
+      ("BIND_ADDRESS", plan.runtime.bind_address.clone()),
+      ("LISTEN_PORT", plan.runtime.listen_port.to_string()),
+      ("SUDO_CMD", sudo_cmd.clone()),
+      ("ENABLE_UPDATER", if plan.auto_updater.enable { "1".to_string() } else { "0".to_string() }),
+      ("OVERWRITE", if overwrite { "1".to_string() } else { "0".to_string() }),
+      ("FIRST_INSTALL", if first_install { "1".to_string() } else { "0".to_string() }),
+      ("RELEASE_TAG", artifacts.release_tag.clone()),
+      // The remote script only trusts staged inputs under this directory for this run.
+      ("STAGING_DIR", remote_stage_dir.clone()),
+      (
+        "SIG_KEYS",
+        sig_keys
+          .iter()
+          .map(|k| format!("{}:{}", k.name.trim(), k.github_user.trim()))
+          .filter(|v| !v.trim().is_empty())
+          .collect::<Vec<_>>()
+          .join(","),
+      ),
+    ];
+    if let Some(token) = plan.github_token.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+      envs.push(("GITHUB_TOKEN", token));
+    }
+    exec_remote_script_streaming(
       app,
       run_id,
-      "info",
-      Some("health"),
-      "Skipping public health check for update-only runs because no new credentials were generated.".to_string(),
-    );
+      "remote",
+      &sess,
+      &envs.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>(),
+      sudo_pw,
+      remote_provision_script(),
+    )?;
+
+    step_ok(app, run_id, "remote");
+
+    step_start(app, run_id, "health", "Checking public server health");
+    if first_install {
+      if let Some(uc) = generated_user_credentials.as_ref() {
+        let probe_version = plan
+          .manifest_version_override
+          .as_deref()
+          .map(str::trim)
+          .filter(|value| !value.is_empty())
+          .unwrap_or(&artifacts.server_manifest_version);
+        verify_public_server_health(app, run_id, &plan, secrets, probe_version, uc)?;
+      } else {
+        log_line(app, run_id, "warn", Some("health"), "Skipping public health check because generated credentials are unavailable.".to_string());
+      }
+    } else {
+      log_line(
+        app,
+        run_id,
+        "info",
+        Some("health"),
+        "Skipping public health check for update-only runs because no new credentials were generated.".to_string(),
+      );
+    }
+    step_ok(app, run_id, "health");
+    Ok(())
+  })();
+
+  // Old staged binaries and secrets do not need to hang around after the run finishes.
+  let cleanup_result = cleanup_remote_path(&sess, &remote_stage_dir);
+  if let Err(err) = provision_result {
+    let _ = cleanup_result;
+    return Err(err);
   }
-  step_ok(app, run_id, "health");
+  cleanup_result?;
   Ok(())
 }
 

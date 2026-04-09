@@ -29,6 +29,7 @@ STATE_DIR="${STATE_DIR:-/var/lib/secluso}"
 SERVICE_USER="${SERVICE_USER:-secluso}"
 RELEASE_TAG="${RELEASE_TAG:-unknown}"
 UPDATE_INTERVAL_SECS="${UPDATE_INTERVAL_SECS:-1800}"
+STAGING_DIR="${STAGING_DIR:-}"
 SIG_ARGS=""
 if [[ -n "${SIG_KEYS:-}" ]]; then
   IFS=',' read -r -a sig_list <<< "$SIG_KEYS"
@@ -51,6 +52,19 @@ emit "info" "config" "BIND_ADDRESS=${BIND_ADDRESS:-127.0.0.1}"
 emit "info" "config" "LISTEN_PORT=${LISTEN_PORT:-8000}"
 emit "info" "config" "RELEASE_TAG=$RELEASE_TAG"
 emit "info" "config" "GITHUB_TOKEN=${GITHUB_TOKEN:+set}"
+emit "info" "config" "STAGING_DIR=${STAGING_DIR:+set}"
+
+# Everything this installer trusts now comes from one per-run staging dir.
+if [[ -z "$STAGING_DIR" || ! -d "$STAGING_DIR" ]]; then
+  emit "error" "install" "Missing uploaded staging directory"
+  exit 1
+fi
+
+SERVER_STAGE="$STAGING_DIR/secluso-server"
+UPDATER_STAGE="$STAGING_DIR/secluso-update"
+SERVICE_ACCOUNT_STAGE="$STAGING_DIR/service_account_key.json"
+USER_CREDENTIALS_STAGE="$STAGING_DIR/user_credentials"
+CREDENTIALS_FULL_STAGE="$STAGING_DIR/credentials_full"
 
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
   emit "warn" "overwrite" "Overwrite enabled: stopping services and deleting Secluso install directories"
@@ -73,33 +87,31 @@ fi
 emit "info" "install" "Ensuring install and state directories..."
 ${SUDO} mkdir -p "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/current_version" "$STATE_DIR" "$STATE_DIR/user_credentials"
 
-if [[ ! -x /tmp/secluso-server ]]; then
-  emit "error" "install" "Missing uploaded /tmp/secluso-server binary"
+if [[ ! -f "$SERVER_STAGE" ]]; then
+  emit "error" "install" "Missing staged server binary"
   exit 1
 fi
-if [[ ! -x /tmp/secluso-update ]]; then
-  emit "error" "install" "Missing uploaded /tmp/secluso-update binary"
+if [[ ! -f "$UPDATER_STAGE" ]]; then
+  emit "error" "install" "Missing staged updater binary"
   exit 1
 fi
 
 emit "info" "install" "Installing verified binaries..."
-${SUDO} install -m 0755 /tmp/secluso-server "$INSTALL_PREFIX/bin/secluso-server"
-${SUDO} install -m 0755 /tmp/secluso-update "$INSTALL_PREFIX/bin/secluso-update"
-${SUDO} rm -f /tmp/secluso-server /tmp/secluso-update
+# The uploaded files only become live binaries here.
+${SUDO} install -m 0755 "$SERVER_STAGE" "$INSTALL_PREFIX/bin/secluso-server"
+${SUDO} install -m 0755 "$UPDATER_STAGE" "$INSTALL_PREFIX/bin/secluso-update"
 printf '%s\n' "${RELEASE_TAG#v}" | ${SUDO} tee "$INSTALL_PREFIX/current_version/server" >/dev/null
 printf '%s\n' "${RELEASE_TAG#v}" | ${SUDO} tee "$INSTALL_PREFIX/current_version/updater" >/dev/null
 
-if [[ -f /tmp/service_account_key.json ]]; then
+if [[ -f "$SERVICE_ACCOUNT_STAGE" ]]; then
   emit "info" "secrets" "Installing service account key"
-  ${SUDO} install -m 0600 /tmp/service_account_key.json "$STATE_DIR/service_account_key.json"
-  ${SUDO} rm -f /tmp/service_account_key.json
+  ${SUDO} install -m 0600 "$SERVICE_ACCOUNT_STAGE" "$STATE_DIR/service_account_key.json"
 fi
 
 if [[ "${FIRST_INSTALL:-0}" == "1" ]]; then
   emit "info" "secrets" "Installing freshly generated user credentials"
-  ${SUDO} install -m 0600 /tmp/user_credentials "$STATE_DIR/user_credentials/user_credentials"
-  ${SUDO} install -m 0600 /tmp/credentials_full "$STATE_DIR/credentials_full"
-  ${SUDO} rm -f /tmp/user_credentials /tmp/credentials_full
+  ${SUDO} install -m 0600 "$USER_CREDENTIALS_STAGE" "$STATE_DIR/user_credentials/user_credentials"
+  ${SUDO} install -m 0600 "$CREDENTIALS_FULL_STAGE" "$STATE_DIR/credentials_full"
 fi
 
 ${SUDO} chown -R "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR"
@@ -162,5 +174,8 @@ else
   ${SUDO} systemctl disable --now "$UPDATER_SERVICE" 2>/dev/null || true
   emit "warn" "systemd" "updater disabled"
 fi
+
+# No reason to leave the staged payloads around once install is done.
+rm -rf "$STAGING_DIR" 2>/dev/null || ${SUDO} rm -rf "$STAGING_DIR" 2>/dev/null || true
 
 emit "info" "done" "DONE"

@@ -14,6 +14,12 @@ use uuid::Uuid;
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
+struct RemoteExecResult {
+  stdout: String,
+  stderr: String,
+  exit: i32,
+}
+
 pub struct TempKeyFiles {
   pub key_file: Option<NamedTempFile>,
 }
@@ -278,4 +284,84 @@ pub fn scp_upload_bytes(sess: &Session, remote_path: &str, mode: i32, bytes: &[u
   remote.close().ok();
   remote.wait_close().ok();
   Ok(())
+}
+
+pub fn create_remote_temp_dir(sess: &Session, prefix: &str) -> Result<String> {
+  // Each run gets its own remote staging dir.
+  // Useful bit is that uploads for this run no longer collide with shared fixed temp paths.
+  let template = format!("/tmp/{prefix}.XXXXXX");
+  let cmd = format!(
+    "stage_dir=\"$(mktemp -d {})\" && chmod 700 \"$stage_dir\" && printf '%s' \"$stage_dir\"",
+    shell_escape(&template)
+  );
+  let result = remote_shell(sess, &cmd, None)?;
+  if result.exit != 0 {
+    bail!(
+      "Failed to create remote staging dir: {}",
+      summarize_remote_failure(&result)
+    );
+  }
+
+  let stage_dir = result.stdout.trim();
+  if stage_dir.is_empty() {
+    bail!("Failed to create remote staging dir: empty result");
+  }
+
+  Ok(stage_dir.to_string())
+}
+
+pub fn cleanup_remote_path(sess: &Session, remote_path: &str) -> Result<()> {
+  // Best to clear staged inputs once the provisioning run is over.
+  let cmd = format!("rm -rf -- {}", shell_escape(remote_path));
+  let result = remote_shell(sess, &cmd, None)?;
+  if result.exit != 0 {
+    bail!(
+      "Failed to clean up remote path {}: {}",
+      remote_path,
+      summarize_remote_failure(&result)
+    );
+  }
+  Ok(())
+}
+
+fn remote_shell(sess: &Session, cmd: &str, stdin: Option<&str>) -> Result<RemoteExecResult> {
+  let full = format!("bash -lc '{}'", shell_escape(cmd));
+  let mut channel = sess.channel_session().context("Failed to open SSH channel")?;
+  channel.exec(&full).with_context(|| format!("Remote exec failed: {cmd}"))?;
+  if let Some(stdin) = stdin {
+    channel.write_all(stdin.as_bytes()).ok();
+    channel.flush().ok();
+  }
+  channel.send_eof().ok();
+
+  let mut stdout = String::new();
+  let mut stderr = String::new();
+  channel.read_to_string(&mut stdout).ok();
+  channel.stderr().read_to_string(&mut stderr).ok();
+  channel.wait_close().ok();
+  let exit = channel.exit_status().unwrap_or(255);
+
+  Ok(RemoteExecResult { stdout, stderr, exit })
+}
+
+fn summarize_remote_failure(result: &RemoteExecResult) -> String {
+  let stderr = result.stderr.trim();
+  if !stderr.is_empty() {
+    return stderr.to_string();
+  }
+
+  let stdout = result.stdout.trim();
+  if !stdout.is_empty() {
+    return stdout.to_string();
+  }
+
+  format!("command exited with status {}", result.exit)
+}
+
+fn shell_escape(s: &str) -> String {
+  if s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/' | ':' | '@')) {
+    s.to_string()
+  } else {
+    format!("'{}'", s.replace('\'', r#"'\''"#))
+  }
 }
