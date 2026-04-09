@@ -338,7 +338,11 @@ pub fn build_github_client(
 // Fetches a specific release from GitHub's API endpoint for the target repo.
 // Callers are expected to apply additional policy checks (draft/published/immutable) before trusting
 // the returned release for installation decisions.
-pub fn fetch_versioned_release(client: &Client, owner_repo: &str, tag_name: &str) -> Result<GhRelease> {
+pub fn fetch_versioned_release(
+    client: &Client,
+    owner_repo: &str,
+    tag_name: &str,
+) -> Result<GhRelease> {
     let url = format!(
         "https://api.github.com/repos/{}/releases/tags/{}",
         owner_repo, tag_name
