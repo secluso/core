@@ -1,15 +1,16 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use docopt::Docopt;
 use semver::Version;
 use serde::Deserialize;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use secluso_update::{
     build_github_client, default_signers, download_and_verify_component, fetch_latest_release,
@@ -63,6 +64,46 @@ enum ReleaseSource {
 struct SelectedRelease {
     release: secluso_update::GhRelease,
     source: ReleaseSource,
+}
+
+#[derive(Debug)]
+// Represents a fully prepared binary that is ready to be atomically renamed into place.
+// The install step should commit the exact file we created and filled here.
+// We stage in the destination directory, use exclusive creation, and then rename that same inode into place.
+struct PreparedInstall {
+    tmp_path: PathBuf,
+    final_path: PathBuf,
+}
+
+impl PreparedInstall {
+    fn tmp_path(&self) -> &Path {
+        &self.tmp_path
+    }
+
+    fn final_path(&self) -> &Path {
+        &self.final_path
+    }
+
+    fn commit(self) -> Result<()> {
+        // The rename is the only step that makes the prepared binary live.
+        // Since tmp_path lives in the target directory, this stays on the same filesystem and keeps the swap atomic.
+        fs::rename(&self.tmp_path, &self.final_path).with_context(|| {
+            format!(
+                "installing {} -> {}",
+                self.tmp_path.display(),
+                self.final_path.display()
+            )
+        })?;
+        Ok(())
+    }
+}
+
+impl Drop for PreparedInstall {
+    fn drop(&mut self) {
+        // If anything fails after preparation but before commit, we remove the temp file.
+        // Leaving executable staging junk around isn't exactly great practice.
+        let _ = fs::remove_file(&self.tmp_path);
+    }
 }
 
 fn main() -> ! {
@@ -132,7 +173,8 @@ fn check_update(args: &Args) -> Result<()> {
         require_release_is_immutable,
         |client_version| server_version(client_version),
         |version| fetch_versioned_release(&client, &github_repo, version),
-    )? else {
+    )?
+    else {
         return Ok(());
     };
 
@@ -171,27 +213,23 @@ fn check_update(args: &Args) -> Result<()> {
         verified.component_bytes.len()
     );
 
-    let tmp_path = "/tmp/secluso-binary-tmp";
     let final_path = component.install_path();
-
-    let final_dir = Path::new(&final_path)
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("invalid install path: {}", final_path))?;
-
-    fs::create_dir_all(final_dir)?;
-
-    // Write to a temporary path first and move into place after optional stop/restart sequencing.
-    // reduces partial-write risk on the final install path.
-    fs::write(tmp_path, &verified.component_bytes)?;
-    fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o755))?;
+    // Prepare the binary before we stop the service.
+    // This makes the verified bytes tied to one fresh staging file all the way until rename.
+    let prepared_install =
+        prepare_verified_component_install(Path::new(&final_path), &verified.component_bytes)?;
 
     if let Some(unit) = args.flag_restart_unit.as_deref() {
         println!("Stopping unit: {}", unit);
         run(&format!("systemctl stop {}", shell_escape(unit)));
     }
 
-    println!("Installing: {} -> {}", tmp_path, final_path);
-    fs::rename(tmp_path, &final_path)?;
+    println!(
+        "Installing: {} -> {}",
+        prepared_install.tmp_path().display(),
+        prepared_install.final_path().display()
+    );
+    prepared_install.commit()?;
 
     if let Some(unit) = args.flag_restart_unit.as_deref() {
         println!("Starting unit: {}", unit);
@@ -201,16 +239,108 @@ fn check_update(args: &Args) -> Result<()> {
     // Persist version only after install has succeeded. Acts to gate future update checks (via the marker).
     write_current_version(component, verified.latest_version.clone())?;
 
-    println!("Update completed successfully (component={})", args.flag_component);
+    println!(
+        "Update completed successfully (component={})",
+        args.flag_component
+    );
     Ok(())
 }
 
-fn select_release_for_component<
-    FLatest,
-    FRequireImmutable,
-    FServerVersion,
-    FFetchVersioned,
->(
+fn prepare_verified_component_install(
+    final_path: &Path,
+    component_bytes: &[u8],
+) -> Result<PreparedInstall> {
+    // We prepare the exact file that will later be atomically renamed into the live install path here.
+    // It creates a fresh staging file in the destination directory, writes the verified bytes, applies the executable mode, and syncs the result.
+    // The idea behind this all is that commit later renames the same file we prepared here.
+    let final_dir = final_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid install path: {}", final_path.display()))?;
+
+    fs::create_dir_all(final_dir)
+        .with_context(|| format!("creating install dir {}", final_dir.display()))?;
+
+    let target_name = final_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "secluso-binary".to_string());
+
+    // Create the temp inode ourselves in the protected target directory with exclusive creation.
+    // *Even if the filename is predictable, create_new refuses to adopt a preexisting file*
+    let (tmp_path, mut tmp_file) = create_secure_install_temp_file(final_dir, &target_name)?;
+
+    let write_result = (|| -> Result<()> {
+        // All writes happen through the file descriptor returned by the exclusive open above.
+        // That keeps the verified bytes attached to the same inode we later rename.
+        tmp_file
+            .write_all(component_bytes)
+            .with_context(|| format!("writing verified binary to {}", tmp_path.display()))?;
+        // Start from 0600 and only mark the file executable after the verified bytes are fully written.
+        // (this avoids exposing a half-written executable if something goes sideways)
+        tmp_file
+            .set_permissions(fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("setting executable mode on {}", tmp_path.display()))?;
+        // Flush file contents and metadata before rename; keeps the final swap from depending on dirty cache state.
+        tmp_file
+            .sync_all()
+            .with_context(|| format!("syncing prepared binary at {}", tmp_path.display()))?;
+        Ok(())
+    })();
+
+    if let Err(err) = write_result {
+        drop(tmp_file);
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    drop(tmp_file);
+
+    Ok(PreparedInstall {
+        tmp_path,
+        final_path: final_path.to_path_buf(),
+    })
+}
+
+fn create_secure_install_temp_file(
+    final_dir: &Path,
+    target_name: &str,
+) -> Result<(PathBuf, fs::File)> {
+    // We only generate a unique name here so retries do not trip over each other.
+    // Actual safety comes from create_new in the target directory and then sticking with that fd for the whole write.
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    for attempt in 0..128u32 {
+        let tmp_path = final_dir.join(format!(
+            ".{target_name}.install.{}.{}.tmp",
+            std::process::id(),
+            seed + u128::from(attempt)
+        ));
+
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("creating temp install path {}", tmp_path.display()));
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "failed to allocate a unique install temp path in {}",
+        final_dir.display()
+    ))
+}
+
+fn select_release_for_component<FLatest, FRequireImmutable, FServerVersion, FFetchVersioned>(
     component: Component,
     current_version: &Version,
     fetch_latest_release_fn: FLatest,
@@ -269,6 +399,86 @@ fn run(cmd: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "{prefix}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn prepared_install_commit_replaces_binary_without_temp_leftovers() {
+        let root = TestDir::new("secluso-update-install");
+        let final_path = root.path().join("bin").join("secluso-server");
+
+        let prepared =
+            prepare_verified_component_install(&final_path, b"verified-server-binary").unwrap();
+
+        assert!(prepared.tmp_path().exists());
+        assert_eq!(prepared.final_path(), final_path.as_path());
+
+        prepared.commit().unwrap();
+
+        // After commit, only the final binary should remain in the directory.
+        assert_eq!(fs::read(&final_path).unwrap(), b"verified-server-binary");
+        assert_eq!(
+            fs::metadata(&final_path).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+
+        let entries = fs::read_dir(final_path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec!["secluso-server".to_string()]);
+    }
+
+    #[test]
+    fn dropping_prepared_install_cleans_up_temp_file() {
+        let root = TestDir::new("secluso-update-cleanup");
+        let final_path = root.path().join("bin").join("secluso-server");
+
+        let tmp_path = {
+            let prepared =
+                prepare_verified_component_install(&final_path, b"verified-server-binary").unwrap();
+            let tmp_path = prepared.tmp_path().to_path_buf();
+            assert!(tmp_path.exists());
+            tmp_path
+        };
+
+        // If installation aborts after the temp inode is created, cleanup should remove it, so that we don't accumulate executable staging files in the protected install directory.
+        assert!(!tmp_path.exists());
+        assert!(!final_path.exists());
+    }
 }
 
 // Minimal shell escaping helper to safely embed unit names into sh -c commands.
