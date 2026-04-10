@@ -3,6 +3,7 @@
 ARG RUST_HASH="5861091755a3298619c94a6cbf0534062cfeb9afcda9f698a13df3ef64e2dd8b"
 ARG TAURI_TARGET=""
 ARG TAURI_RUNNER="cargo"
+ARG CARGO_XWIN_VERSION="0.21.4"
 ARG TAURI_BUNDLE_TARGETS_JSON='["appimage","deb","rpm"]'
 ARG SOURCE_DATE_EPOCH="1704067200"
 ARG DEBUG="0"
@@ -11,6 +12,7 @@ FROM docker.io/rust@sha256:${RUST_HASH} AS builder
 
 ARG TAURI_TARGET
 ARG TAURI_RUNNER
+ARG CARGO_XWIN_VERSION
 ARG TAURI_BUNDLE_TARGETS_JSON
 ARG SOURCE_DATE_EPOCH
 ARG DEBUG
@@ -72,7 +74,7 @@ ENV RUST_LOG=tauri_bundler=info,tauri_cli_node=info,ureq=warn
 RUN /opt/secluso-docker-deploy/setup_linuxdeploy_plugins.bash
 RUN pnpm install --frozen-lockfile
 RUN rustup target add ${TAURI_TARGET}
-RUN if [ "${TAURI_RUNNER}" = "cargo-xwin" ]; then cargo install --locked cargo-xwin; fi
+RUN if [ "${TAURI_RUNNER}" = "cargo-xwin" ]; then cargo install --locked cargo-xwin --version ${CARGO_XWIN_VERSION}; fi
 RUN /opt/secluso-docker-deploy/run_tauri_build.bash
 
 FROM scratch AS artifact
