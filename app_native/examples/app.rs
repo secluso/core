@@ -13,7 +13,7 @@ use secluso_app_native::{
     get_key_packages, decrypt_thumbnail,
 };
 use secluso_client_lib::http_client::HttpClient;
-use secluso_client_lib::pairing::NUM_SECRET_BYTES;
+use secluso_client_lib::pairing::{NUM_SECRET_BYTES};
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 use secluso_client_lib::mls_clients::{MOTION, THUMBNAIL, NUM_MLS_CLIENTS};
 use docopt::Docopt;
@@ -28,6 +28,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::net::{TcpListener, TcpStream, SocketAddr};
 use std::str::FromStr;
+use std::io::ErrorKind;
 
 // This is a simple app that pairs with the Secluso camera, receives motion videos,
 // and launches livestream sessions.
@@ -41,6 +42,8 @@ const CAMERA_ADDR: &str = "127.0.0.1";
 const CAMERA_NAME: &str = "Camera";
 const DATA_DIR: &str = "example_app_data";
 const FIRST_APP_ADDR: &str = "127.0.0.1";
+
+pub const MAX_ALLOWED_MSG_LEN: u64 = 65536;
 
 const USAGE: &str = "
 Runs a simple Secluso app.
@@ -535,8 +538,6 @@ fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-use std::io::ErrorKind;
-
 fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut len_data = [0u8; 8];
 
@@ -552,6 +553,15 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     }
 
     let len = u64::from_be_bytes(len_data);
+
+    if len > MAX_ALLOWED_MSG_LEN {
+        println!("Communicated message length ({len}) exceeds the allowed length ({MAX_ALLOWED_MSG_LEN})");
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "Intended message length is too large",
+        ))
+    }
+
     let mut msg = vec![0u8; len as usize];
     let mut offset = 0;
 
