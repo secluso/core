@@ -4,6 +4,8 @@ ARG RUST_HASH="5861091755a3298619c94a6cbf0534062cfeb9afcda9f698a13df3ef64e2dd8b"
 ARG TAURI_TARGET=""
 ARG TAURI_RUNNER="cargo"
 ARG CARGO_XWIN_VERSION="0.21.4"
+ARG PNPM_VERSION="10.29.1"
+ARG PNPM_TARBALL_INTEGRITY="sha512-SNriM2NaZFdoowKNGVRcrMFohjnusfNzTkLW1rlxr78iqhrJr1Khc9nDogwVhXz6QA8ZmU15ovYm/Mc/zNqbvA=="
 ARG TAURI_BUNDLE_TARGETS_JSON='["appimage","deb","rpm"]'
 ARG SOURCE_DATE_EPOCH="1704067200"
 ARG DEBUG="0"
@@ -13,6 +15,8 @@ FROM docker.io/rust@sha256:${RUST_HASH} AS builder
 ARG TAURI_TARGET
 ARG TAURI_RUNNER
 ARG CARGO_XWIN_VERSION
+ARG PNPM_VERSION
+ARG PNPM_TARBALL_INTEGRITY
 ARG TAURI_BUNDLE_TARGETS_JSON
 ARG SOURCE_DATE_EPOCH
 ARG DEBUG
@@ -55,7 +59,16 @@ RUN set -eux; \
       ${webkit_pkgs}; \
     rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g pnpm@10.29.1
+RUN set -eux; \
+    pnpm_tgz="/tmp/pnpm-${PNPM_VERSION}.tgz"; \
+    curl -fsSL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+      "https://registry.npmjs.org/pnpm/-/pnpm-${PNPM_VERSION}.tgz" \
+      -o "${pnpm_tgz}"; \
+    # Verify the exact pnpm tarball bytes before installing any global tooling from npm
+    node -e 'const crypto=require("crypto"); const fs=require("fs"); const [file, integrity]=process.argv.slice(1); const [algo, expected]=integrity.split("-"); const actual=crypto.createHash(algo).update(fs.readFileSync(file)).digest("base64"); if (actual !== expected) { console.error(`Integrity mismatch for ${file}\\nexpected: ${integrity}\\nactual:   ${algo}-${actual}`); process.exit(1); }' \
+      "${pnpm_tgz}" "${PNPM_TARBALL_INTEGRITY}"; \
+    npm install -g "${pnpm_tgz}"; \
+    rm -f "${pnpm_tgz}"
 
 COPY --from=proj . .
 COPY lib/docker_deploy /opt/secluso-docker-deploy
