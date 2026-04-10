@@ -2,6 +2,74 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 
+verify_sha256() {
+  local path="$1"
+  local expected_sha="$2"
+  local label="$3"
+  local actual_sha
+
+  actual_sha="$(sha256sum "$path" | awk '{print $1}')"
+  [[ "$actual_sha" == "$expected_sha" ]] || {
+    echo "SHA-256 mismatch for $label" >&2
+    echo "  expected: $expected_sha" >&2
+    echo "  actual:   $actual_sha" >&2
+    return 1
+  }
+}
+
+download_verified_file() {
+  local url="$1"
+  local path="$2"
+  local expected_sha="$3"
+  local label="$4"
+  local tmp_path="${path}.tmp"
+
+  rm -f "$tmp_path"
+  curl --fail --location \
+    --retry 8 \
+    --retry-delay 2 \
+    --retry-all-errors \
+    --connect-timeout 20 \
+    --output "$tmp_path" \
+    "$url" || {
+      rm -f "$tmp_path"
+      return 1
+    }
+  verify_sha256 "$tmp_path" "$expected_sha" "$label" || {
+    rm -f "$tmp_path"
+    return 1
+  }
+  mv "$tmp_path" "$path"
+}
+
+expected_apprun_sha256() {
+  case "$1" in
+    AppRun-x86_64) echo "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f" ;;
+    AppRun-aarch64) echo "072f17c0895a85c490282fe5395c5007e5fc75da727e553b3b8fb680feb11578" ;;
+    *)
+      echo "Unsupported AppRun helper: $1" >&2
+      return 1
+      ;;
+  esac
+}
+
+expected_nsis_utils_sha256() {
+  local version="$1"
+
+  if [[ -n "${TAURI_NSIS_UTILS_SHA256:-}" ]]; then
+    echo "$TAURI_NSIS_UTILS_SHA256"
+    return
+  fi
+
+  case "$version" in
+    0.5.3) echo "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709" ;;
+    *)
+      echo "TAURI_NSIS_UTILS_SHA256 must be set when overriding TAURI_NSIS_UTILS_VERSION (got ${version})" >&2
+      return 1
+      ;;
+  esac
+}
+
 is_debug_enabled() {
   case "${DEBUG:-0}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
@@ -86,25 +154,23 @@ prepare_linux_apprun_cache() {
 
   local cache_dir="/root/.cache/tauri"
   local apprun_path="$cache_dir/$apprun_name"
-  local apprun_tmp="$apprun_path.tmp"
   local download_url="https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/${apprun_name}"
+  local expected_sha
+
+  expected_sha="$(expected_apprun_sha256 "$apprun_name")" || exit 1
 
   mkdir -p "$cache_dir"
+  if [[ -f "$apprun_path" ]]; then
+    verify_sha256 "$apprun_path" "$expected_sha" "$apprun_name" || {
+      rm -f "$apprun_path"
+    }
+    [[ -f "$apprun_path" ]] && chmod +x "$apprun_path"
+  fi
   if [[ ! -x "$apprun_path" ]]; then
     echo "==> prefetching ${apprun_name} for tauri linux bundle"
-    if curl --fail --location \
-      --retry 8 \
-      --retry-delay 2 \
-      --retry-all-errors \
-      --connect-timeout 20 \
-      --output "$apprun_tmp" \
-      "$download_url"; then
-      mv "$apprun_tmp" "$apprun_path"
-      chmod +x "$apprun_path"
-    else
-      echo "==> warning: failed to prefetch ${apprun_name}; tauri will attempt its own download later" >&2
-      rm -f "$apprun_tmp"
-    fi
+    # Fail closed here so the build never falls back to Tauri's own unverified download path.
+    download_verified_file "$download_url" "$apprun_path" "$expected_sha" "$apprun_name"
+    chmod +x "$apprun_path"
   fi
 
   if [[ -f "$apprun_path" ]]; then
@@ -119,11 +185,19 @@ prepare_windows_nsis_cache() {
   local nsis_utils_version="${TAURI_NSIS_UTILS_VERSION:-0.5.3}"
   local dll_path="$cache_dir/nsis_tauri_utils.dll"
   local download_url="https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v${nsis_utils_version}/nsis_tauri_utils.dll"
+  local expected_sha
+
+  expected_sha="$(expected_nsis_utils_sha256 "$nsis_utils_version")" || exit 1
 
   mkdir -p "$cache_dir"
+  if [[ -f "$dll_path" ]]; then
+    verify_sha256 "$dll_path" "$expected_sha" "nsis_tauri_utils.dll" || {
+      rm -f "$dll_path"
+    }
+  fi
   if [[ ! -f "$dll_path" ]]; then
     echo "==> prefetching nsis_tauri_utils.dll (v${nsis_utils_version})"
-    curl --fail --location --retry 3 --output "$dll_path" "$download_url"
+    download_verified_file "$download_url" "$dll_path" "$expected_sha" "nsis_tauri_utils.dll"
   fi
   touch -h -d "@${SOURCE_DATE_EPOCH}" "$dll_path"
 }
