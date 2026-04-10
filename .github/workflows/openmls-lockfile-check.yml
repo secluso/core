@@ -1,0 +1,35 @@
+name: OpenMLS Lockfile Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      openmls_tag:
+        description: OpenMLS tag to validate Cargo.lock entries against
+        required: true
+        default: openmls-v0.8.1
+      openmls_commit:
+        description: Commit hash that the OpenMLS tag must resolve to
+        required: true
+        default: 47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6
+
+permissions:
+  contents: read
+
+jobs:
+  check-openmls-lockfiles:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run OpenMLS lockfile check
+        run: |
+          python3 scripts/check_openmls_versions.py \
+            --tag "${{ github.event.inputs.openmls_tag }}" \
+            --expected-commit "${{ github.event.inputs.openmls_commit }}"
