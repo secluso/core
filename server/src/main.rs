@@ -18,7 +18,7 @@ use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::Engine;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
-use rocket::data::{Data, ToByteUnit};
+use rocket::data::{Data, ToByteUnit, Limits};
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Header;
 use rocket::response::content::RawText;
@@ -99,6 +99,7 @@ const MAX_NUM_PENDING_MOTION_FILES: usize = 100;
 const MAX_LIVESTREAM_FILE_SIZE: usize = 20; // in mebibytes
 const MAX_NUM_PENDING_LIVESTREAM_FILES: usize = 50;
 const MAX_COMMAND_FILE_SIZE: usize = 100; // in kibibytes
+const MAX_JSON_SIZE: usize = 10; // in kibibytes
 
 async fn get_num_files(path: &Path) -> io::Result<usize> {
     let mut entries = fs::read_dir(path).await?;
@@ -1126,6 +1127,8 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     let config = rocket::Config {
         port: listen_port.unwrap_or(8000),
         address: address.parse().unwrap(),
+        limits: Limits::default()
+            .limit("json", MAX_JSON_SIZE.kibibytes()),
         ..rocket::Config::default()
     };
 
