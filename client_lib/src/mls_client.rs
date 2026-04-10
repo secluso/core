@@ -7,7 +7,7 @@
 
 use super::identity::Identity;
 use super::openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto;
-use openmls::test_utils::StorageProviderTrait;
+use openmls_traits::{storage::StorageProvider as StorageProviderTrait};
 use crate::pairing;
 use openmls::prelude::*;
 use openmls::schedule::{ExternalPsk, PreSharedKeyId, Psk};
@@ -726,7 +726,7 @@ impl MlsClient {
 
         log::trace!("Generating update message");
         // Generate the message to the group.
-        let msg: MlsMessageIn = commit_msg_bundle.into_commit().into();
+        let msg: MlsMessageOut = commit_msg_bundle.into_commit();
 
         // Merge pending commit.
         group
@@ -857,7 +857,7 @@ impl MlsClient {
             .create_message(&self.provider, &self.identity.signer, bytes)
             .map_err(|e| io::Error::other(format!("{e}")))?;
 
-        let msg: MlsMessageIn = message_out.into();
+        let msg: MlsMessageOut = message_out;
 
         let mut msg_vec = Vec::new();
         msg.tls_serialize(&mut msg_vec)

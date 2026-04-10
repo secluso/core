@@ -16,13 +16,12 @@ log = { version = "0.4.29", optional = true }
 mio = { version = "0.8", features = ["net", "os-poll"] }
 serde = "1.0"
 serde_derive = "1.0"
-openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
-ds-lib = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
-openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
-openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
-openmls_libcrux_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
-openmls_memory_storage = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1", features = ["persistence"] }
-openmls_basic_credential = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.1" }
+openmls = { version = "=0.8.1"} # test-utils provides us with ds-lib , features = ["test-utils"]
+openmls_traits = "=0.5.0"
+openmls_rust_crypto = "=0.5.1"
+openmls_libcrux_crypto = "=0.3.1"
+openmls_memory_storage = { version = "=0.5.0", features = ["persistence"] }
+openmls_basic_credential = "=0.5.0"
 bincode = "1.3.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "multipart", "rustls"], optional = true }
 base64 = { version = "0.22.1", optional = true }
