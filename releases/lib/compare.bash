@@ -103,14 +103,26 @@ compare_runs() {
 
     crate1="$(jq -r '.crate' <<<"$a")"
     ver1="$(jq -r '.version' <<<"$a")"
-    p1="$run1/$(jq -r '.bin_path' <<<"$a")"
+    local bin_path1
+    bin_path1="$(jq -r '.bin_path' <<<"$a")"
+    p1="$(validate_manifest_bin_path "$run1" "$bin_path1" "$tgt" "$bin")" || {
+      echo "FAIL: invalid manifest bin_path for run1 $pkg | $tgt | $bin: $bin_path1"
+      status=1
+      continue
+    }
     lock1="$(jq -r '.crate_lock_sha256' <<<"$a")"
     dig1="$(jq -r '.rust_digest' <<<"$a")"
     sha1="$(jq -r '.sha256 // empty' <<<"$a")"
 
     crate2="$(jq -r '.crate' <<<"$b")"
     ver2="$(jq -r '.version' <<<"$b")"
-    p2="$run2/$(jq -r '.bin_path' <<<"$b")"
+    local bin_path2
+    bin_path2="$(jq -r '.bin_path' <<<"$b")"
+    p2="$(validate_manifest_bin_path "$run2" "$bin_path2" "$tgt" "$bin")" || {
+      echo "FAIL: invalid manifest bin_path for run2 $pkg | $tgt | $bin: $bin_path2"
+      status=1
+      continue
+    }
     lock2="$(jq -r '.crate_lock_sha256' <<<"$b")"
     dig2="$(jq -r '.rust_digest' <<<"$b")"
     sha2="$(jq -r '.sha256 // empty' <<<"$b")"
@@ -200,4 +212,39 @@ compare_runs() {
   fi
 
   return "$status"
+}
+
+validate_manifest_bin_path() {
+  local run_dir="$1"
+  local bin_path="$2"
+  local expected_target="$3"
+  local expected_bin="$4"
+
+  # Compare should only read files from the run's artifacts tree.
+  # Manifest data is treated as untrusted input here.
+  # So reject any path that could escape the run directory or redirect hashing to an unrelated local file.
+  [[ -n "$bin_path" ]] || return 1
+  [[ "$bin_path" == "artifacts/$expected_target/"* ]] || return 1
+  [[ "$bin_path" != /* ]] || return 1
+  [[ "$(basename "$bin_path")" == "$expected_bin" ]] || return 1
+
+  local old_ifs="$IFS"
+  local component
+  local current="$run_dir"
+  IFS='/'
+  for component in $bin_path; do
+    if [[ -z "$component" || "$component" == "." || "$component" == ".." ]]; then
+      IFS="$old_ifs"
+      return 1
+    fi
+    current="$current/$component"
+    # Reject symlinks anywhere on the manifest-controlled path so a manifest cannot redirect hashing outside the selected run through the filesystem.
+    if [[ -L "$current" ]]; then
+      IFS="$old_ifs"
+      return 1
+    fi
+  done
+  IFS="$old_ifs"
+
+  printf '%s/%s' "$run_dir" "$bin_path"
 }
