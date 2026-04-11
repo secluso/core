@@ -1,0 +1,221 @@
+name: Example App Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  example-app-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run full flow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          SERVER_PID=""
+          CAMERA_PID=""
+          APP1_PID=""
+          APP2_PID=""
+
+          cleanup() {
+            echo "Cleaning up background processes..."
+            for pid in "$APP2_PID" "$APP1_PID" "$CAMERA_PID" "$SERVER_PID"; do
+              if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+                kill "${pid}" 2>/dev/null || true
+              fi
+            done
+
+            sleep 2
+
+            for pid in "$APP2_PID" "$APP1_PID" "$CAMERA_PID" "$SERVER_PID"; do
+              if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+                kill -9 "${pid}" 2>/dev/null || true
+              fi
+            done
+          }
+
+          trap cleanup EXIT
+
+          echo "=== Step 1: Generate credentials and camera secret ==="
+          pushd config_tool
+
+          cargo run --release -- --generate-camera-secret --dir camera_secret
+          test -f camera_secret/camera_secret
+
+          cargo run --release -- --generate-user-credentials --server-addr http://127.0.0.1:8000 --dir credentials
+          test -f credentials/user_credentials
+          test -f credentials/user_credentials_for_testing
+
+          popd
+
+          mkdir -p server/user_credentials
+
+          cp config_tool/camera_secret/camera_secret camera_hub/
+          cp config_tool/camera_secret/camera_secret app_native/
+
+          cp config_tool/credentials/user_credentials_for_testing app_native/user_credentials
+          cp config_tool/credentials/user_credentials server/user_credentials/
+
+          echo "=== Step 2: Launch server ==="
+          pushd server
+          cargo build --release
+          SECLUSO_SKIP_FCM_CONFIG=1 cargo run --release > ../server.log 2>&1 &
+          SERVER_PID=$!
+          popd
+
+          echo "Server PID: ${SERVER_PID}"
+          echo "Waiting for server to listen on 127.0.0.1:8000 ..."
+          while true; do
+            if bash -c 'echo > /dev/tcp/127.0.0.1/8000' >/dev/null 2>&1; then
+              echo "Server is up."
+              break
+            fi
+
+            if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+              echo "Server exited before becoming ready."
+              cat server.log || true
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          echo "=== Step 3: Launch camera ==="
+          pushd camera_hub
+          rm -rf state pending_*
+          cargo build --release --features test
+          RUST_LOG=error cargo run --release --features test > ../camera.log 2>&1 &
+          CAMERA_PID=$!
+          popd
+
+          echo "Camera PID: ${CAMERA_PID}"
+          sleep 5
+
+          if ! kill -0 "${CAMERA_PID}" 2>/dev/null; then
+            echo "Camera exited unexpectedly."
+            echo "Server log:"
+            cat ../server/server.log || true
+            echo "Camera log:"
+            cat camera.log || true
+            exit 1
+          fi
+
+          echo "=== Step 4: Launch first app ==="
+          pushd app_native
+          rm -rf example_app_data
+          cargo build --release --example app --features for-example
+          RUST_BACKTRACE=1 RUST_LOG=error cargo run --release --example app --features for-example > ../app1.log 2>&1 &
+          APP1_PID=$!
+          popd
+
+          echo "App 1 PID: ${APP1_PID}"
+
+          echo "Waiting 10 seconds before launching second app..."
+          sleep 10
+
+          if ! kill -0 "${APP1_PID}" 2>/dev/null; then
+            echo "First app exited before second app launch."
+            wait "${APP1_PID}" || true
+            echo "Server log:"
+            cat ../server/server.log || true
+            echo "Camera log:"
+            cat ../camera_hub/camera.log || true
+            echo "App1 log:"
+            cat app1.log || true
+            exit 1
+          fi
+
+          echo "=== Step 5: Launch second app ==="
+          rm -rf app_native_2
+          mkdir -p app_native_2
+          cp app_native/target/release/examples/app app_native_2/app
+          cp app_native/user_credentials app_native_2/
+
+          pushd app_native_2
+          rm -rf example_app_data
+          chmod +x ./app
+          RUST_LOG=error ./app --secondary-app > ../app2.log 2>&1 &
+          APP2_PID=$!
+          popd
+
+          echo "App 2 PID: ${APP2_PID}"
+
+          echo "=== Monitoring both apps ==="
+          APP1_STATUS=""
+          APP2_STATUS=""
+
+          while true; do
+            if [[ -z "${APP1_STATUS}" ]] && ! kill -0 "${APP1_PID}" 2>/dev/null; then
+              set +e
+              wait "${APP1_PID}"
+              APP1_STATUS=$?
+              set -e
+              echo "App 1 exited with status ${APP1_STATUS}"
+            fi
+
+            if [[ -z "${APP2_STATUS}" ]] && ! kill -0 "${APP2_PID}" 2>/dev/null; then
+              set +e
+              wait "${APP2_PID}"
+              APP2_STATUS=$?
+              set -e
+              echo "App 2 exited with status ${APP2_STATUS}"
+            fi
+
+            if [[ -n "${APP1_STATUS}" && "${APP1_STATUS}" != "0" ]]; then
+              echo "App 1 failed."
+              echo "--- app1.log ---"
+              cat app1.log || true
+              echo "--- app2.log ---"
+              cat app2.log || true
+              echo "--- server.log ---"
+              cat server.log || true
+              echo "--- camera.log ---"
+              cat camera.log || true
+              exit 1
+            fi
+
+            if [[ -n "${APP2_STATUS}" && "${APP2_STATUS}" != "0" ]]; then
+              echo "App 2 failed."
+              echo "--- app1.log ---"
+              cat app1.log || true
+              echo "--- app2.log ---"
+              cat app2.log || true
+              echo "--- server.log ---"
+              cat server.log || true
+              echo "--- camera.log ---"
+              cat camera.log || true
+              exit 1
+            fi
+
+            if [[ -n "${APP1_STATUS}" && -n "${APP2_STATUS}" ]]; then
+              echo "Both apps exited successfully."
+              break
+            fi
+
+            if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+              echo "Server exited unexpectedly while apps were running."
+              cat server.log || true
+              exit 1
+            fi
+
+            if ! kill -0 "${CAMERA_PID}" 2>/dev/null; then
+              echo "Camera exited unexpectedly while apps were running."
+              cat camera.log || true
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "Example app workflow completed successfully."
