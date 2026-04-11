@@ -86,7 +86,7 @@ fn generate_user_credentials(dir: &Path, mut server_addr: &str) -> anyhow::Resul
     server_addr = server_addr.trim_end_matches('/');
 
 
-    let (credentials, credentials_full) =
+    let (credentials, credentials_full, credentials_full_testing) =
         create_user_credentials(server_addr.to_string())?;
 
     // Create the directory if it doesn't exist
@@ -105,9 +105,9 @@ fn generate_user_credentials(dir: &Path, mut server_addr: &str) -> anyhow::Resul
         .context("Failed to save image")?;
 
     // Save the credentials_full in a file to be used for testing with the example app
-    // let mut file =
-    //     fs::File::create(dir.clone() + "/user_credentials_for_testing").expect("Could not create file");
-    // let _ = file.write_all(&credentials_full);
+    let mut file =
+        fs::File::create(dir.join("user_credentials_for_testing")).expect("Could not create file");
+    let _ = file.write_all(&credentials_full_testing);
 
     Ok(())
 }
