@@ -11,8 +11,7 @@ use rand::Rng;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
-use secluso_client_lib::pairing;
-use secluso_client_lib::pairing::generate_ip_camera_secret;
+use secluso_client_lib::pairing::{self, generate_ip_camera_secret, MAX_ALLOWED_MSG_LEN};
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 use serde_json::Value;
 use std::fs;
@@ -26,6 +25,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::{thread, time::Duration};
 use url::Url;
+use std::io::ErrorKind;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -49,8 +49,6 @@ fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-use std::io::ErrorKind;
-
 fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut len_data = [0u8; 8];
 
@@ -66,6 +64,15 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     }
 
     let len = u64::from_be_bytes(len_data);
+
+    if len > MAX_ALLOWED_MSG_LEN {
+        error!("Communicated message length ({len}) exceeds the allowed length ({MAX_ALLOWED_MSG_LEN})");
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "Intended message length is too large",
+        ))
+    }
+
     let mut msg = vec![0u8; len as usize];
     let mut offset = 0;
 

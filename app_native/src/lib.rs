@@ -4,7 +4,7 @@
 
 use anyhow::anyhow;
 use anyhow::Context;
-use log::{debug, error};
+use log::{debug, error, info};
 use rand::Rng;
 use secluso_client_lib::config::{
     Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE,
@@ -16,7 +16,7 @@ use secluso_client_lib::mls_clients::{
     CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
     NUM_COMMON_MLS_CLIENTS, NUM_DEDICATED_MLS_CLIENTS,
 };
-use secluso_client_lib::pairing;
+use secluso_client_lib::pairing::{self, MAX_ALLOWED_MSG_LEN};
 use secluso_client_lib::video::{encrypt_video_file, decrypt_video_file, decrypt_thumbnail_file};
 use openmls::prelude::KeyPackage;
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ use std::str;
 use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use log::info;
+use std::io::ErrorKind;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -120,6 +120,14 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut len_data = [0u8; 8];
     stream.read_exact(&mut len_data)?;
     let len = u64::from_be_bytes(len_data);
+
+    if len > MAX_ALLOWED_MSG_LEN {
+        error!("Communicated message length ({len}) exceeds the allowed length ({MAX_ALLOWED_MSG_LEN})");
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "Intended message length is too large",
+        ))
+    }
 
     let mut msg = vec![0u8; len as usize];
     stream.read_exact(&mut msg)?;

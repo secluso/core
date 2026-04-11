@@ -22,6 +22,7 @@ use rand::{Rng, thread_rng};
 pub const NUM_SECRET_BYTES: usize = 72;
 pub const CAMERA_SECRET_VERSION: &str = "v1.2";
 const WIFI_PASSWORD_LEN: usize = 10;
+pub const MAX_ALLOWED_MSG_LEN: u64 = 8192;
 
 // We version the QR code, store secret bytes as well (base64-url-encoded) as the Wi-Fi passphrase for Raspberry Pi cameras.
 // Versioned QR codes can be helpful to ensure compatibility.
