@@ -70,7 +70,7 @@ jobs:
           echo "=== Step 2: Launch server ==="
           pushd server
           cargo build --release
-          SECLUSO_SKIP_FCM_CONFIG=1 cargo run --release > ../server.log 2>&1 &
+          SECLUSO_SKIP_FCM_CONFIG=1 cargo run --release > server.log 2>&1 &
           SERVER_PID=$!
           popd
 
@@ -84,7 +84,7 @@ jobs:
 
             if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
               echo "Server exited before becoming ready."
-              cat server.log || true
+              cat server/server.log || true
               exit 1
             fi
 
@@ -95,7 +95,7 @@ jobs:
           pushd camera_hub
           rm -rf state pending_*
           cargo build --release --features test
-          RUST_LOG=error cargo run --release --features test > ../camera.log 2>&1 &
+          RUST_LOG=error cargo run --release --features test > camera.log 2>&1 &
           CAMERA_PID=$!
           popd
 
@@ -105,9 +105,9 @@ jobs:
           if ! kill -0 "${CAMERA_PID}" 2>/dev/null; then
             echo "Camera exited unexpectedly."
             echo "Server log:"
-            cat ../server/server.log || true
+            cat server/server.log || true
             echo "Camera log:"
-            cat camera.log || true
+            cat camera_hub/camera.log || true
             exit 1
           fi
 
@@ -115,7 +115,7 @@ jobs:
           pushd app_native
           rm -rf example_app_data
           cargo build --release --example app --features for-example
-          RUST_BACKTRACE=1 RUST_LOG=error cargo run --release --example app --features for-example > ../app1.log 2>&1 &
+          RUST_BACKTRACE=1 RUST_LOG=error cargo run --release --example app --features for-example > app1.log 2>&1 &
           APP1_PID=$!
           popd
 
@@ -128,11 +128,11 @@ jobs:
             echo "First app exited before second app launch."
             wait "${APP1_PID}" || true
             echo "Server log:"
-            cat ../server/server.log || true
+            cat server/server.log || true
             echo "Camera log:"
-            cat ../camera_hub/camera.log || true
+            cat camera_hub/camera.log || true
             echo "App1 log:"
-            cat app1.log || true
+            cat app_native/app1.log || true
             exit 1
           fi
 
@@ -145,7 +145,7 @@ jobs:
           pushd app_native_2
           rm -rf example_app_data
           chmod +x ./app
-          RUST_LOG=error ./app --secondary-app > ../app2.log 2>&1 &
+          RUST_LOG=error ./app --secondary-app > app2.log 2>&1 &
           APP2_PID=$!
           popd
 
@@ -175,26 +175,26 @@ jobs:
             if [[ -n "${APP1_STATUS}" && "${APP1_STATUS}" != "0" ]]; then
               echo "App 1 failed."
               echo "--- app1.log ---"
-              cat app1.log || true
+              cat app_native/app1.log || true
               echo "--- app2.log ---"
-              cat app2.log || true
+              cat app_native_2/app2.log || true
               echo "--- server.log ---"
-              cat server.log || true
+              cat server/server.log || true
               echo "--- camera.log ---"
-              cat camera.log || true
+              cat camera_hub/camera.log || true
               exit 1
             fi
 
             if [[ -n "${APP2_STATUS}" && "${APP2_STATUS}" != "0" ]]; then
               echo "App 2 failed."
               echo "--- app1.log ---"
-              cat app1.log || true
+              cat app_native/app1.log || true
               echo "--- app2.log ---"
-              cat app2.log || true
+              cat app_native_2/app2.log || true
               echo "--- server.log ---"
-              cat server.log || true
+              cat server/server.log || true
               echo "--- camera.log ---"
-              cat camera.log || true
+              cat camera_hub/camera.log || true
               exit 1
             fi
 
@@ -205,13 +205,13 @@ jobs:
 
             if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
               echo "Server exited unexpectedly while apps were running."
-              cat server.log || true
+              cat server/server.log || true
               exit 1
             fi
 
             if ! kill -0 "${CAMERA_PID}" 2>/dev/null; then
               echo "Camera exited unexpectedly while apps were running."
-              cat camera.log || true
+              cat camera_hub/camera.log || true
               exit 1
             fi
 
