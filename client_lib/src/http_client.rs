@@ -16,7 +16,7 @@ use std::time::Duration;
 const MAX_MOTION_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 mebibytes
 const MAX_LIVESTREAM_FILE_SIZE: u64 = 20 * 1024 * 1024; // 20 mebibytes
 const MAX_COMMAND_FILE_SIZE: u64 = 100 * 1024; // 100 kibibytes
-const MAX_CHECK_RESP_SIZE: u64 = 10 * 1024; // 10 kibibytes
+const MAX_CHECK_RESP_SIZE: u64 = 20 * 1024; // 20 kibibytes
 const MAX_NOTIFICATION_TARGET_SIZE: u64 = 10 * 1024; // 10 kibibytes
 const IOS_NOTIFICATION_RESP_MAX_SIZE: u64 = 10 * 1024; // 10 kibibytes
 
@@ -149,7 +149,7 @@ impl HttpClient {
         let mut limited = response.take(max_size);
         limited.read_to_end(&mut buf)?;
 
-        if buf.len() > max_size as usize {
+        if buf.len() >= max_size as usize {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "Notification target response exceeded maximum allowed size",
@@ -239,7 +239,7 @@ impl HttpClient {
             let mut limited = response.take(max_size);
             limited.read_to_end(&mut buf)?;
 
-            let body = if buf.len() > 64 * 1024 {
+            let body = if buf.len() >= max_size.try_into().unwrap() {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     format!(
@@ -459,7 +459,7 @@ impl HttpClient {
         let mut limited = response.take(max_size);
         limited.read_to_end(&mut buf)?;
 
-        if buf.len() > max_size as usize {
+        if buf.len() >= max_size as usize {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "Livestream check response exceeded maximum allowed size",
@@ -649,7 +649,7 @@ impl HttpClient {
         let mut limited = response.take(max_size);
         limited.read_to_end(&mut buf)?;
 
-        if buf.len() > max_size as usize {
+        if buf.len() >= max_size as usize {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "Livestream check response exceeded maximum allowed size",
