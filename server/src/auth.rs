@@ -36,6 +36,7 @@ const LOCKOUT: Duration = Duration::from_secs(15 * 60);
 
 pub struct BasicAuth {
     pub username: String,
+    pub authenticated: bool,
 }
 
 // Store for each IP the amount of invalid attempts of logging in to prevent bruteforcing.
@@ -103,7 +104,7 @@ fn to_fixed_bytes(s: &str) -> [u8; NUM_PASSWORD_CHARS] {
 }
 
 #[rocket::async_trait]
-impl<'r> FromRequest<'r> for BasicAuth {
+impl<'r> FromRequest<'r> for &'r BasicAuth {
     type Error = ();
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
@@ -150,7 +151,13 @@ impl<'r> FromRequest<'r> for BasicAuth {
                 let eq: Choice = stored_password_bytes.ct_eq(&password_bytes);
 
                 if bool::from(eq) && user_exists {
-                    return Outcome::Success(BasicAuth { username });
+                    // Cache the BasicAuth value within the request-local storage
+                    // Allows us to avoid performing another auth lookup later within the ServerVersionHeader fairing
+                    let auth: &BasicAuth = req.local_cache(|| BasicAuth {
+                        username,
+                        authenticated: true,
+                    });
+                    return Outcome::Success(auth);
                 }
             }
         }

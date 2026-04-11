@@ -64,12 +64,21 @@ impl Fairing for ServerVersionHeader {
         }
     }
 
-    // Response callback - we want to intercept and add the X-Server-Version to each response. This will allow us to do compatability checks in the app.
-    async fn on_response<'r>(&self, _request: &'r Request<'_>, response: &mut Response<'r>) {
-        let header = Header::new("X-Server-Version", self.version.clone());
-        response.set_header(header); // Modify the request with the new header
+    // Response callback - we want to intercept and add the X-Server-Version to each AUTHENTICATED response.
+    // This will allow us to do compatability checks in the app.
+    async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
+        // When the cache lookup fails (from the &BasicAuth request guard), this defaults to 'false' within the authenticated field.
+        let auth: &BasicAuth = request.local_cache(|| BasicAuth {
+            username: "N/A".to_string(),
+            authenticated: false,
+        });
+        if auth.authenticated {
+            let header = Header::new("X-Server-Version", self.version.clone());
+            response.set_header(header); // Modify the request with the new header
+        }
     }
 }
+
 // Per-user livestream start state
 #[derive(Clone)]
 struct EventState {
@@ -155,7 +164,7 @@ async fn pair(
     data: Json<PairingRequest>,
     state: &rocket::State<SharedPairingState>,
     unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
-    auth: BasicAuth,
+    auth: &BasicAuth,
 ) -> Json<PairingResponse> {
     debug!(
         "[PAIR] Entered pair method with role: {}, token: {}",
@@ -344,7 +353,7 @@ async fn upload(
     filename: &str,
     counter: u32,
     data: Data<'_>,
-    auth: BasicAuth,
+    auth: &BasicAuth,
 ) -> io::Result<String> {
     // Validate counter (must be 1 or 2)
     if counter == 0 || counter > 2 {
@@ -396,7 +405,7 @@ async fn upload(
 }
 
 #[post("/bulkCheck", format = "application/json", data = "<data>")]
-async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> Json<Vec<GroupTimestamp>> {
+async fn bulk_group_check(data: Json<MotionPairs>, auth: &BasicAuth) -> Json<Vec<GroupTimestamp>> {
     let root = Path::new("data").join(&auth.username);
     let pairs_wrapper: MotionPairs = data.into_inner();
     let pair_list = pairs_wrapper.group_names;
@@ -438,7 +447,7 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> Json<Vec<
 }
 
 #[get("/<camera>/<filename>")]
-async fn retrieve(camera: &str, filename: &str, auth: BasicAuth) -> Option<RawText<File>> {
+async fn retrieve(camera: &str, filename: &str, auth: &BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     if check_path_sandboxed(&root, &camera_path).is_err() {
@@ -470,7 +479,7 @@ async fn remove_file_lock(camera: &str) {
 }
 
 #[delete("/<camera>/<filename>")]
-async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()> {
+async fn delete_file(camera: &str, filename: &str, auth: &BasicAuth) -> Option<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
 
@@ -531,7 +540,7 @@ async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()
 }
 
 #[delete("/<camera>")]
-async fn delete_camera(camera: &str, auth: BasicAuth) -> io::Result<()> {
+async fn delete_camera(camera: &str, auth: &BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     check_path_sandboxed(&root, &camera_path)?;
@@ -542,7 +551,7 @@ async fn delete_camera(camera: &str, auth: BasicAuth) -> io::Result<()> {
 }
 
 #[post("/fcm_token", data = "<data>")]
-async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
+async fn upload_fcm_token(data: Data<'_>, auth: &BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let token_path = root.join("fcm_token");
     check_path_sandboxed(&root, &token_path)?;
@@ -561,7 +570,7 @@ async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String>
 async fn upload_notification_target(
     data: Json<NotificationTarget>,
     unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
-    auth: BasicAuth,
+    auth: &BasicAuth,
 ) -> io::Result<String> {
     let target = data.into_inner();
     unifiedpush::validate_notification_target(unifiedpush_policy.inner(), &target)
@@ -581,7 +590,7 @@ async fn upload_notification_target(
 
 #[get("/notification_target")]
 async fn retrieve_notification_target(
-    auth: BasicAuth,
+    auth: &BasicAuth,
     unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
 ) -> Option<Json<NotificationTarget>> {
     let root = Path::new("data").join(&auth.username);
@@ -594,7 +603,7 @@ async fn retrieve_notification_target(
 #[post("/fcm_notification", data = "<data>")]
 async fn send_fcm_notification(
     data: Data<'_>,
-    auth: BasicAuth,
+    auth: &BasicAuth,
     unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
@@ -686,7 +695,7 @@ fn get_user_state(all_state: AllEventState, username: &str) -> EventState {
 #[post("/livestream/<camera>")]
 async fn livestream_start(
     camera: &str,
-    auth: BasicAuth,
+    auth: &BasicAuth,
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
@@ -725,7 +734,7 @@ async fn livestream_start(
 #[get("/livestream/<camera>")]
 async fn livestream_check(
     camera: &str,
-    auth: BasicAuth,
+    auth: &BasicAuth,
     all_state: &rocket::State<AllEventState>,
     mut end: Shutdown,
 ) -> EventStream![] {
@@ -769,7 +778,7 @@ async fn livestream_upload(
     camera: &str,
     filename: &str,
     data: Data<'_>,
-    auth: BasicAuth,
+    auth: &BasicAuth,
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
@@ -830,7 +839,7 @@ async fn livestream_upload(
 async fn livestream_retrieve(
     camera: &str,
     filename: &str,
-    auth: BasicAuth,
+    auth: &BasicAuth,
     all_state: &rocket::State<AllEventState>,
 ) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
@@ -876,7 +885,7 @@ async fn livestream_retrieve(
 }
 
 #[post("/livestream_end/<camera>")]
-async fn livestream_end(camera: &str, auth: BasicAuth) -> io::Result<()> {
+async fn livestream_end(camera: &str, auth: &BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     check_path_sandboxed(&root, &camera_path)?;
@@ -897,7 +906,7 @@ async fn livestream_end(camera: &str, auth: BasicAuth) -> io::Result<()> {
 async fn config_command(
     camera: &str,
     data: Data<'_>,
-    auth: BasicAuth,
+    auth: &BasicAuth,
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
@@ -932,7 +941,7 @@ async fn config_command(
 #[get("/config/<camera>")]
 async fn config_check(
     camera: &str,
-    auth: BasicAuth,
+    auth: &BasicAuth,
     all_state: &rocket::State<AllEventState>,
     mut end: Shutdown,
 ) -> EventStream![] {
@@ -986,7 +995,7 @@ async fn config_check(
 }
 
 #[post("/config_response/<camera>", data = "<data>")]
-async fn config_response(camera: &str, data: Data<'_>, auth: BasicAuth) -> io::Result<()> {
+async fn config_response(camera: &str, data: Data<'_>, auth: &BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     check_path_sandboxed(&root, &camera_path)?;
@@ -1018,7 +1027,7 @@ async fn config_response(camera: &str, data: Data<'_>, auth: BasicAuth) -> io::R
 }
 
 #[get("/config_response/<camera>")]
-async fn retrieve_config_response(camera: &str, auth: BasicAuth) -> Option<RawText<File>> {
+async fn retrieve_config_response(camera: &str, auth: &BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     if check_path_sandboxed(&root, &camera_path).is_err() {
@@ -1039,23 +1048,26 @@ async fn retrieve_config_response(camera: &str, auth: BasicAuth) -> Option<RawTe
     None
 }
 
+// state.inner() utilizes a borrowed value
+// When changing from BasicAuth -> &BasicAuth, we needed to specify where the borrowed value is borrowed from
+// Thus, the 'a lifetime specifier was added here
 #[get("/fcm_config")]
-async fn retrieve_fcm_data(
-    state: &rocket::State<ConfigResponse>,
-    _auth: BasicAuth,
-) -> Json<&ConfigResponse> {
+async fn retrieve_fcm_data<'a>(
+    state: &'a rocket::State<ConfigResponse>,
+    _auth: &BasicAuth,
+) -> Json<&'a ConfigResponse> {
     Json(state.inner())
 }
 
 #[get("/status")]
-async fn retrieve_server_status(_auth: BasicAuth) -> Json<ServerStatus> {
+async fn retrieve_server_status(_auth: &BasicAuth) -> Json<ServerStatus> {
     let server_status = ServerStatus { ok: true };
 
     Json(server_status)
 }
 
 #[post("/debug_logs", data = "<data>")]
-async fn upload_debug_logs(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
+async fn upload_debug_logs(data: Data<'_>, auth: &BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let logs_path = root.join("debug_logs");
     check_path_sandboxed(&root, &logs_path)?;
