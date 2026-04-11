@@ -39,7 +39,7 @@ pub fn generate_user_credentials_only(
     fs::create_dir_all(work_path).with_context(|| format!("creating work dir {}", work_path.display()))?;
 
     let normalized_url = normalize_server_url(server_url)?;
-    let (credentials, credentials_full) = create_user_credentials(normalized_url)?;
+    let (credentials, credentials_full, _) = create_user_credentials(normalized_url)?;
 
     fs::write(work_path.join("user_credentials"), credentials)
         .with_context(|| format!("writing {}", work_path.join("user_credentials").display()))?;

@@ -86,12 +86,15 @@ pub fn generate_random(num_chars: usize, special_characters: bool) -> String {
         .collect()
 }
 
-pub fn create_user_credentials(server_addr: String) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+pub fn create_user_credentials(server_addr: String) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let username = generate_random(NUM_USERNAME_CHARS, true);
     let password = generate_random(NUM_PASSWORD_CHARS, true);
 
     let credentials_string = format!("{}{}", username, password);
     let credentials = credentials_string.into_bytes();
+
+    let credentials_full_testing_string = format!("{}{}{}", username, password, server_addr);
+    let credentials_full_testing = credentials_full_testing_string.into_bytes();
 
     let user_credentials = UserCredentials {
         version: USER_CREDENTIALS_VERSION.to_string(),
@@ -102,6 +105,6 @@ pub fn create_user_credentials(server_addr: String) -> anyhow::Result<(Vec<u8>, 
     let credentials_full_string = serde_json::to_string(&user_credentials)
         .context("Failed to serialize user credentials into JSON")?;
     let credentials_full = credentials_full_string.into_bytes();
-
-    Ok((credentials, credentials_full))
+    
+    Ok((credentials, credentials_full, credentials_full_testing))
 }
