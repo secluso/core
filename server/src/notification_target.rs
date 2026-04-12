@@ -275,7 +275,7 @@ pub async fn send_notification(
 #[cfg(test)]
 mod tests {
     use super::{validate_notification_target, UnifiedPushPolicy};
-    use secluso_server_backbone::types::NotificationTarget;
+    use secluso_server_backbone::types::{IosRelayBinding, NotificationTarget};
 
     fn android_target(url: &str) -> NotificationTarget {
         NotificationTarget {
@@ -284,6 +284,24 @@ mod tests {
             unifiedpush_endpoint_url: Some(url.to_string()),
             unifiedpush_pub_key: Some("pub".to_string()),
             unifiedpush_auth: Some("auth".to_string()),
+        }
+    }
+
+    // A testing helper to build either the pairing-time placeholder iOS target or a fully bound iOS relay target depending on whether a relay base URL is supplied.
+    fn ios_target(relay_base_url: Option<&str>) -> NotificationTarget {
+        NotificationTarget {
+            platform: "ios".to_string(),
+            ios_relay_binding: relay_base_url.map(|relay_base_url| IosRelayBinding {
+                relay_base_url: relay_base_url.to_string(),
+                hub_token: "hub-token".to_string(),
+                app_install_id: "install-id".to_string(),
+                hub_id: "hub-id".to_string(),
+                device_token: "device-token".to_string(),
+                expires_at_epoch_ms: 1,
+            }),
+            unifiedpush_endpoint_url: None,
+            unifiedpush_pub_key: None,
+            unifiedpush_auth: None,
         }
     }
 
@@ -399,5 +417,25 @@ mod tests {
             &android_target("https://fcm.googleapis.com/fcm/send/example"),
         )
         .unwrap();
+    }
+
+    #[test]
+    // Tests that the pairing-time placeholder target for iOS still passes when no relay binding has been attached yet.
+    fn accepts_ios_placeholder_without_binding() {
+        let policy = UnifiedPushPolicy::with_default_allowlist().unwrap();
+        validate_notification_target(&policy, &ios_target(None))
+            .expect("placeholder iOS target should be accepted without a relay binding");
+    }
+
+    #[test]
+    // Tests that server-side iOS relay checks reject unexpected relay hosts before the target can be persisted to the hub.
+    fn rejects_untrusted_ios_relay_host() {
+        let policy = UnifiedPushPolicy::with_default_allowlist().unwrap();
+        let err = validate_notification_target(&policy, &ios_target(Some("https://evil.example")))
+            .expect_err("unexpected relay host should be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("Refusing unexpected iOS relay host"));
     }
 }
