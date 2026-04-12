@@ -252,7 +252,7 @@ async fn pair(
                         unifiedpush_policy.inner(),
                         &target,
                     ) {
-                        warn!("Dropping invalid UnifiedPush target from pair payload: {err}");
+                        warn!("Dropping invalid notification target from pair payload: {err}");
                         None
                     } else {
                         Some(target)
