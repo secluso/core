@@ -275,7 +275,7 @@ pub async fn send_notification(
 #[cfg(test)]
 mod tests {
     use super::{validate_notification_target, UnifiedPushPolicy};
-    use secluso_server_backbone::types::{IosRelayBinding, NotificationTarget};
+    use secluso_server_backbone::types::NotificationTarget;
 
     fn android_target(url: &str) -> NotificationTarget {
         NotificationTarget {
@@ -284,23 +284,6 @@ mod tests {
             unifiedpush_endpoint_url: Some(url.to_string()),
             unifiedpush_pub_key: Some("pub".to_string()),
             unifiedpush_auth: Some("auth".to_string()),
-        }
-    }
-
-    fn ios_target(relay_base_url: Option<&str>) -> NotificationTarget {
-        NotificationTarget {
-            platform: "ios".to_string(),
-            ios_relay_binding: relay_base_url.map(|relay_base_url| IosRelayBinding {
-                relay_base_url: relay_base_url.to_string(),
-                hub_token: "hub-token".to_string(),
-                app_install_id: "install-id".to_string(),
-                hub_id: "hub-id".to_string(),
-                device_token: "device-token".to_string(),
-                expires_at_epoch_ms: 1,
-            }),
-            unifiedpush_endpoint_url: None,
-            unifiedpush_pub_key: None,
-            unifiedpush_auth: None,
         }
     }
 
