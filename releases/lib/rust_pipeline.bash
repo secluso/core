@@ -38,7 +38,7 @@ build_and_manifest() {
       local crate_name="$pkg"
 
       if [[ "$pkg" == "raspberry_camera_hub" ]]; then
-        features_args=( --build-arg "FEATURES=--features raspberry,telemetry" )
+        features_args=( --build-arg "FEATURES=--features raspberry" )
         crate_name="camera_hub"
       elif [[ "$pkg" == "ip_camera_hub" ]]; then
         features_args=( --build-arg "FEATURES=--features ip" )
