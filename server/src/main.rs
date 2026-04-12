@@ -41,8 +41,8 @@ use std::time::Instant;
 
 pub mod auth;
 pub mod fcm;
+pub mod notification_target;
 pub mod security;
-pub mod unifiedpush;
 
 use self::auth::{initialize_users, BasicAuth, FailStore};
 use self::fcm::send_notification;
@@ -140,7 +140,7 @@ async fn persist_pair_notification_target(
 
 async fn load_notification_target(
     root: &Path,
-    unifiedpush_policy: &unifiedpush::UnifiedPushPolicy,
+    notification_target_policy: &notification_target::UnifiedPushPolicy,
 ) -> io::Result<Option<NotificationTarget>> {
     let target_path = root.join("notification_target.json");
     check_path_sandboxed(root, &target_path)?;
@@ -152,7 +152,9 @@ async fn load_notification_target(
     let raw = fs::read_to_string(target_path).await?;
     let parsed = serde_json::from_str::<NotificationTarget>(&raw)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    if let Err(err) = unifiedpush::validate_notification_target(unifiedpush_policy, &parsed) {
+    if let Err(err) =
+        notification_target::validate_notification_target(notification_target_policy, &parsed)
+    {
         warn!("Ignoring invalid persisted notification target: {err}");
         return Ok(None);
     }
@@ -164,7 +166,7 @@ async fn load_notification_target(
 async fn pair(
     data: Json<PairingRequest>,
     state: &rocket::State<SharedPairingState>,
-    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
+    notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
     auth: &BasicAuth,
 ) -> Json<PairingResponse> {
     debug!(
@@ -248,8 +250,8 @@ async fn pair(
                 debug!("[PAIR] Phone connected");
                 entry.phone_connected = true;
                 entry.notification_target = data.notification_target.clone().and_then(|target| {
-                    if let Err(err) = unifiedpush::validate_notification_target(
-                        unifiedpush_policy.inner(),
+                    if let Err(err) = notification_target::validate_notification_target(
+                        notification_target_policy.inner(),
                         &target,
                     ) {
                         warn!("Dropping invalid notification target from pair payload: {err}");
@@ -573,11 +575,11 @@ async fn upload_fcm_token(data: Data<'_>, auth: &BasicAuth) -> io::Result<String
 #[post("/notification_target", format = "json", data = "<data>")]
 async fn upload_notification_target(
     data: Json<NotificationTarget>,
-    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
+    notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
     auth: &BasicAuth,
 ) -> io::Result<String> {
     let target = data.into_inner();
-    unifiedpush::validate_notification_target(unifiedpush_policy.inner(), &target)
+    notification_target::validate_notification_target(notification_target_policy.inner(), &target)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
 
     let root = Path::new("data").join(&auth.username);
@@ -594,11 +596,11 @@ async fn upload_notification_target(
 
 #[get("/notification_target")]
 async fn retrieve_notification_target(
+    notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
     auth: &BasicAuth,
-    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
 ) -> Option<Json<NotificationTarget>> {
     let root = Path::new("data").join(&auth.username);
-    let parsed = load_notification_target(&root, unifiedpush_policy.inner())
+    let parsed = load_notification_target(&root, notification_target_policy.inner())
         .await
         .ok()??;
     Some(Json(parsed))
@@ -607,11 +609,12 @@ async fn retrieve_notification_target(
 #[post("/fcm_notification", data = "<data>")]
 async fn send_fcm_notification(
     data: Data<'_>,
+    notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
     auth: &BasicAuth,
-    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
-    let notification_target = load_notification_target(&root, unifiedpush_policy.inner()).await?;
+    let notification_target =
+        load_notification_target(&root, notification_target_policy.inner()).await?;
     let notification_msg = data.open(8.kibibytes()).into_bytes().await?;
 
     if let Some(target) = notification_target.as_ref() {
@@ -638,8 +641,8 @@ async fn send_fcm_notification(
                 }
             };
 
-            match unifiedpush::send_notification(
-                unifiedpush_policy.inner(),
+            match notification_target::send_notification(
+                notification_target_policy.inner(),
                 endpoint_url,
                 pub_key,
                 auth_secret,
@@ -1170,8 +1173,8 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     } else {
         fcm::fetch_config().expect("Failed to fetch config")
     };
-    let unifiedpush_policy =
-        unifiedpush::UnifiedPushPolicy::from_env().expect("Failed to parse UnifiedPush allowlist");
+    let notification_target_policy = notification_target::UnifiedPushPolicy::from_env()
+        .expect("Failed to parse UnifiedPush allowlist");
 
     rocket::custom(config)
         .attach(ServerVersionHeader {
@@ -1182,7 +1185,7 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
         .manage(failure_store)
         .manage(pairing_state)
         .manage(fcm_config)
-        .manage(unifiedpush_policy)
+        .manage(notification_target_policy)
         .mount(
             "/",
             routes![
