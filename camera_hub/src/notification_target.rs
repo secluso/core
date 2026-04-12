@@ -2,12 +2,23 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use secluso_client_lib::http_client::{HttpClient, NotificationTarget};
+use secluso_client_lib::http_client::{validate_ios_relay_binding, HttpClient, NotificationTarget};
 use std::fs;
 use std::io;
 use std::path::Path;
 
 const TARGET_FILENAME: &str = "notification_target.json";
+
+// Build the placeholder target we keep for iOS while no relay binding is available / after the current binding has been rejected.
+fn ios_placeholder_target(platform: &str) -> NotificationTarget {
+    NotificationTarget {
+        platform: platform.to_string(),
+        ios_relay_binding: None,
+        unifiedpush_endpoint_url: None,
+        unifiedpush_pub_key: None,
+        unifiedpush_auth: None,
+    }
+}
 
 pub fn persist_notification_target(state_dir: &str, target: &NotificationTarget) -> io::Result<()> {
     fs::create_dir_all(state_dir)?;
@@ -55,13 +66,7 @@ pub fn refresh_notification_target(
             });
             if let Some(target) = cached {
                 if target.platform.eq_ignore_ascii_case("ios") {
-                    let placeholder = NotificationTarget {
-                        platform: target.platform.clone(),
-                        ios_relay_binding: None,
-                        unifiedpush_endpoint_url: None,
-                        unifiedpush_pub_key: None,
-                        unifiedpush_auth: None,
-                    };
+                    let placeholder = ios_placeholder_target(&target.platform);
                     if let Err(e) = persist_notification_target(state_dir, &placeholder) {
                         error!("Failed to persist iOS notification placeholder: {e}");
                     }
@@ -93,16 +98,20 @@ pub fn send_notification(
     if let Some(target) = target {
         if target.platform.eq_ignore_ascii_case("ios") {
             if let Some(binding) = target.ios_relay_binding.as_ref() {
+                if let Err(e) = validate_ios_relay_binding(binding) {
+                    let placeholder = ios_placeholder_target(&target.platform);
+                    if let Err(clear_err) = persist_notification_target(state_dir, &placeholder) {
+                        error!(
+                            "Failed to persist iOS notification placeholder after relay validation failure: {clear_err}"
+                        );
+                    }
+                    return Err(e);
+                }
+
                 let result = http_client.send_ios_notification(notification_msg, binding);
                 if let Err(e) = result.as_ref() {
                     if e.to_string().contains("Relay error: 403") {
-                        let placeholder = NotificationTarget {
-                            platform: target.platform.clone(),
-                            ios_relay_binding: None,
-                            unifiedpush_endpoint_url: None,
-                            unifiedpush_pub_key: None,
-                            unifiedpush_auth: None,
-                        };
+                        let placeholder = ios_placeholder_target(&target.platform);
                         if let Err(clear_err) = persist_notification_target(state_dir, &placeholder)
                         {
                             error!(

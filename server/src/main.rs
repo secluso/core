@@ -41,12 +41,12 @@ use std::time::Instant;
 
 pub mod auth;
 pub mod fcm;
+pub mod notification_target;
 pub mod security;
-pub mod unifiedpush;
 
 use self::auth::{initialize_users, BasicAuth, FailStore};
 use self::fcm::send_notification;
-use self::security::check_path_sandboxed;
+use self::security::{check_path_sandboxed, join_validated_child};
 
 // Store the version of the current crate, which we'll use in all responses.
 #[derive(Default, Clone)]
@@ -130,7 +130,7 @@ async fn persist_pair_notification_target(
 
 async fn load_notification_target(
     root: &Path,
-    unifiedpush_policy: &unifiedpush::UnifiedPushPolicy,
+    notification_target_policy: &notification_target::UnifiedPushPolicy,
 ) -> io::Result<Option<NotificationTarget>> {
     let target_path = root.join("notification_target.json");
     check_path_sandboxed(root, &target_path)?;
@@ -142,7 +142,9 @@ async fn load_notification_target(
     let raw = fs::read_to_string(target_path).await?;
     let parsed = serde_json::from_str::<NotificationTarget>(&raw)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    if let Err(err) = unifiedpush::validate_notification_target(unifiedpush_policy, &parsed) {
+    if let Err(err) =
+        notification_target::validate_notification_target(notification_target_policy, &parsed)
+    {
         warn!("Ignoring invalid persisted notification target: {err}");
         return Ok(None);
     }
@@ -154,7 +156,7 @@ async fn load_notification_target(
 async fn pair(
     data: Json<PairingRequest>,
     state: &rocket::State<SharedPairingState>,
-    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
+    notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
     auth: BasicAuth,
 ) -> Json<PairingResponse> {
     debug!(
@@ -238,11 +240,11 @@ async fn pair(
                 debug!("[PAIR] Phone connected");
                 entry.phone_connected = true;
                 entry.notification_target = data.notification_target.clone().and_then(|target| {
-                    if let Err(err) = unifiedpush::validate_notification_target(
-                        unifiedpush_policy.inner(),
+                    if let Err(err) = notification_target::validate_notification_target(
+                        notification_target_policy.inner(),
                         &target,
                     ) {
-                        warn!("Dropping invalid UnifiedPush target from pair payload: {err}");
+                        warn!("Dropping invalid notification target from pair payload: {err}");
                         None
                     } else {
                         Some(target)
@@ -352,7 +354,7 @@ async fn upload(
     }
 
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -407,7 +409,10 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> Json<Vec<
         let group_name = pair.group_name;
         let epoch_to_check = pair.epoch_to_check;
 
-        let camera_path = root.join(&group_name);
+        let camera_path = match join_validated_child(&root, &group_name, "camera") {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
         if check_path_sandboxed(&root, &camera_path).is_err() {
             continue;
         }
@@ -440,7 +445,7 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> Json<Vec<
 #[get("/<camera>/<filename>")]
 async fn retrieve(camera: &str, filename: &str, auth: BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera").ok()?;
     if check_path_sandboxed(&root, &camera_path).is_err() {
         return None;
     }
@@ -472,7 +477,7 @@ async fn remove_file_lock(camera: &str) {
 #[delete("/<camera>/<filename>")]
 async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera").ok()?;
 
     if check_path_sandboxed(&root, &camera_path).is_err() {
         return None;
@@ -533,7 +538,7 @@ async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()
 #[delete("/<camera>")]
 async fn delete_camera(camera: &str, auth: BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     remove_file_lock(camera).await;
@@ -560,11 +565,11 @@ async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String>
 #[post("/notification_target", format = "json", data = "<data>")]
 async fn upload_notification_target(
     data: Json<NotificationTarget>,
-    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
+    notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
     auth: BasicAuth,
 ) -> io::Result<String> {
     let target = data.into_inner();
-    unifiedpush::validate_notification_target(unifiedpush_policy.inner(), &target)
+    notification_target::validate_notification_target(notification_target_policy.inner(), &target)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
 
     let root = Path::new("data").join(&auth.username);
@@ -582,10 +587,10 @@ async fn upload_notification_target(
 #[get("/notification_target")]
 async fn retrieve_notification_target(
     auth: BasicAuth,
-    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
+    notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
 ) -> Option<Json<NotificationTarget>> {
     let root = Path::new("data").join(&auth.username);
-    let parsed = load_notification_target(&root, unifiedpush_policy.inner())
+    let parsed = load_notification_target(&root, notification_target_policy.inner())
         .await
         .ok()??;
     Some(Json(parsed))
@@ -595,10 +600,11 @@ async fn retrieve_notification_target(
 async fn send_fcm_notification(
     data: Data<'_>,
     auth: BasicAuth,
-    unifiedpush_policy: &rocket::State<unifiedpush::UnifiedPushPolicy>,
+    notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
-    let notification_target = load_notification_target(&root, unifiedpush_policy.inner()).await?;
+    let notification_target =
+        load_notification_target(&root, notification_target_policy.inner()).await?;
     let notification_msg = data.open(8.kibibytes()).into_bytes().await?;
 
     if let Some(target) = notification_target.as_ref() {
@@ -625,8 +631,8 @@ async fn send_fcm_notification(
                 }
             };
 
-            match unifiedpush::send_notification(
-                unifiedpush_policy.inner(),
+            match notification_target::send_notification(
+                notification_target_policy.inner(),
                 endpoint_url,
                 pub_key,
                 auth_secret,
@@ -690,7 +696,7 @@ async fn livestream_start(
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -732,13 +738,21 @@ async fn livestream_check(
     let camera = camera.to_string();
 
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(&camera);
+    let camera_path = join_validated_child(&root, &camera, "camera");
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
     let mut rx = user_state.sender.subscribe();
 
     EventStream! {
-        if check_path_sandboxed(&root, &camera_path).is_err() {
+        let camera_path = match camera_path.as_ref() {
+            Ok(path) => path,
+            Err(_) => {
+                yield Event::data("invalid");
+                return;
+            }
+        };
+
+        if check_path_sandboxed(&root, camera_path).is_err() {
             yield Event::data("invalid");
             return;
         }
@@ -773,7 +787,7 @@ async fn livestream_upload(
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -834,7 +848,7 @@ async fn livestream_retrieve(
     all_state: &rocket::State<AllEventState>,
 ) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera").ok()?;
     if check_path_sandboxed(&root, &camera_path).is_err() {
         return None;
     }
@@ -878,7 +892,7 @@ async fn livestream_retrieve(
 #[post("/livestream_end/<camera>")]
 async fn livestream_end(camera: &str, auth: BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -901,7 +915,7 @@ async fn config_command(
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -939,13 +953,21 @@ async fn config_check(
     let camera = camera.to_string();
 
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(&camera);
+    let camera_path = join_validated_child(&root, &camera, "camera");
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
     let mut rx = user_state.sender.subscribe();
 
     EventStream! {
-        if check_path_sandboxed(&root, &camera_path).is_err() {
+        let camera_path = match camera_path.as_ref() {
+            Ok(path) => path,
+            Err(_) => {
+                yield Event::data("invalid");
+                return;
+            }
+        };
+
+        if check_path_sandboxed(&root, camera_path).is_err() {
             yield Event::data("invalid");
             return;
         }
@@ -988,7 +1010,7 @@ async fn config_check(
 #[post("/config_response/<camera>", data = "<data>")]
 async fn config_response(camera: &str, data: Data<'_>, auth: BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -1020,7 +1042,7 @@ async fn config_response(camera: &str, data: Data<'_>, auth: BasicAuth) -> io::R
 #[get("/config_response/<camera>")]
 async fn retrieve_config_response(camera: &str, auth: BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera").ok()?;
     if check_path_sandboxed(&root, &camera_path).is_err() {
         return None;
     }
@@ -1136,8 +1158,8 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     } else {
         fcm::fetch_config().expect("Failed to fetch config")
     };
-    let unifiedpush_policy =
-        unifiedpush::UnifiedPushPolicy::from_env().expect("Failed to parse UnifiedPush allowlist");
+    let notification_target_policy = notification_target::UnifiedPushPolicy::from_env()
+        .expect("Failed to parse UnifiedPush allowlist");
 
     rocket::custom(config)
         .attach(ServerVersionHeader {
@@ -1148,7 +1170,7 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
         .manage(failure_store)
         .manage(pairing_state)
         .manage(fcm_config)
-        .manage(unifiedpush_policy)
+        .manage(notification_target_policy)
         .mount(
             "/",
             routes![
