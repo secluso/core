@@ -2,27 +2,46 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::fs;
+use anyhow::{anyhow, Context};
 use openmls::prelude::KeyPackage;
 use serde::{Deserialize, Serialize};
-use qrcode::QrCode;
-use image::Luma;
+use std::fs;
 use std::fs::create_dir;
 use std::io::Write;
 use std::path::Path;
-use anyhow::{anyhow, Context};
 
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
 use rand::distributions::Uniform;
-use rand::{Rng, thread_rng};
-
+use rand::{thread_rng, Rng};
 
 pub const NUM_SECRET_BYTES: usize = 72;
 pub const CAMERA_SECRET_VERSION: &str = "v1.2";
 const WIFI_PASSWORD_LEN: usize = 10;
 pub const MAX_ALLOWED_MSG_LEN: u64 = 8192;
+
+#[cfg(feature = "camera_secret_qrcode")]
+fn save_camera_secret_qrcode(path: &Path, content: &[u8]) -> anyhow::Result<()> {
+    use image::Luma;
+    use qrcode::QrCode;
+
+    let code =
+        QrCode::new(content).context("Failed to generate QR code from camera secret bytes")?;
+    code.render::<Luma<u8>>()
+        .build()
+        .save(path)
+        .with_context(|| format!("Failed to save QR code image to {}", path.display()))?;
+
+    Ok(())
+}
+
+#[cfg(not(feature = "camera_secret_qrcode"))]
+fn save_camera_secret_qrcode(_path: &Path, _content: &[u8]) -> anyhow::Result<()> {
+    Err(anyhow!(
+        "camera secret QR code support is not enabled in this build"
+    ))
+}
 
 // We version the QR code, store secret bytes as well (base64-url-encoded) as the Wi-Fi passphrase for Raspberry Pi cameras.
 // Versioned QR codes can be helpful to ensure compatibility.
@@ -62,7 +81,6 @@ pub struct App {
     key_package: KeyPackage,
 }
 
-
 pub fn generate_ip_camera_secret(camera_name: &str) -> anyhow::Result<Vec<u8>> {
     let crypto = OpenMlsRustCrypto::default();
     let secret = crypto
@@ -76,16 +94,15 @@ pub fn generate_ip_camera_secret(camera_name: &str) -> anyhow::Result<Vec<u8>> {
         wifi_password: None,
     };
 
-    let writeable_secret = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
+    let writeable_secret = serde_json::to_string(&camera_secret)
+        .context("Failed to serialize camera secret into JSON")?;
 
-    // Save as QR code to be shown to the app
-    let code = QrCode::new(writeable_secret.as_bytes()).context("Failed to generate QR code from camera secret bytes")?;
-    let image = code.render::<Luma<u8>>().build();
-    image
-        .save(format!(
-            "camera_{}_secret_qrcode.png",
-            camera_name.replace(" ", "_").to_lowercase()
-        )).context("Failed to save QR code image")?;
+    // Save as QR code to be shown to the app.
+    let qrcode_path = format!(
+        "camera_{}_secret_qrcode.png",
+        camera_name.replace(" ", "_").to_lowercase()
+    );
+    save_camera_secret_qrcode(Path::new(&qrcode_path), writeable_secret.as_bytes())?;
 
     Ok(secret)
 }
@@ -95,7 +112,8 @@ fn generate_wifi_password(dir: &Path) -> anyhow::Result<String> {
     let wifi_password = generate_random(WIFI_PASSWORD_LEN, false); //10 characters that are upper/low alphanumeric
     fs::File::create(dir.join("wifi_password")).context("Could not create wifi_password file")?;
 
-    fs::write(dir.join("wifi_password"), wifi_password.clone()).with_context(|| format!("Could not create {}", dir.display()))?;
+    fs::write(dir.join("wifi_password"), wifi_password.clone())
+        .with_context(|| format!("Could not create {}", dir.display()))?;
 
     Ok(wifi_password)
 }
@@ -123,7 +141,10 @@ pub fn generate_random(num_chars: usize, special_characters: bool) -> String {
         .collect()
 }
 
-pub fn generate_raspberry_camera_secret(dir: &Path, error_on_folder_exist: bool) -> anyhow::Result<()> {
+pub fn generate_raspberry_camera_secret(
+    dir: &Path,
+    error_on_folder_exist: bool,
+) -> anyhow::Result<()> {
     // If it already exists and we don't want to try re-generating credentials..
     if dir.exists() && error_on_folder_exist {
         return Err(anyhow!("The directory exists!"));
@@ -131,13 +152,14 @@ pub fn generate_raspberry_camera_secret(dir: &Path, error_on_folder_exist: bool)
 
     // Create the directory if it doesn't exist
     if !dir.exists() {
-         create_dir(dir)?;
+        create_dir(dir)?;
     }
 
     let crypto = OpenMlsRustCrypto::default();
     let secret = crypto
         .crypto()
-        .random_vec(NUM_SECRET_BYTES).context("Failed to generate camera secret bytes")?;
+        .random_vec(NUM_SECRET_BYTES)
+        .context("Failed to generate camera secret bytes")?;
 
     let wifi_password = generate_wifi_password(dir)?;
     let camera_secret = CameraSecret {
@@ -146,24 +168,22 @@ pub fn generate_raspberry_camera_secret(dir: &Path, error_on_folder_exist: bool)
         wifi_password: Some(wifi_password),
     };
 
-    let qr_content = serde_json::to_string(&camera_secret).context("Failed to serialize camera secret into JSON")?;
+    let qr_content = serde_json::to_string(&camera_secret)
+        .context("Failed to serialize camera secret into JSON")?;
 
     // Save in a file to be given to the camera
     // The camera secret does not need to be versioned. We're not worried about the formatting ever changing.
     // Just put the secret by itself in this file.
     let mut file =
         std::fs::File::create(dir.join("camera_secret")).context("Could not create file")?;
-    file.write_all(&secret).context("Failed to write camera secret data to file")?;
+    file.write_all(&secret)
+        .context("Failed to write camera secret data to file")?;
 
-    // Save as QR code to be shown to the app (with secret + version + wifi password)
-    let code = QrCode::new(qr_content.clone()).context("Failed to generate QR code from camera secret bytes")?;
-    let image = code.render::<Luma<u8>>().build();
-    image
-        .save(dir.join("camera_secret_qrcode.png")).context("Failed to save QR code image")?;
+    // Save as QR code to be shown to the app (with secret + version + wifi password).
+    save_camera_secret_qrcode(&dir.join("camera_secret_qrcode.png"), qr_content.as_bytes())?;
 
     Ok(())
 }
-
 
 impl App {
     pub fn new(key_package: KeyPackage) -> Self {
