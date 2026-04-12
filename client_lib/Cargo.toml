@@ -10,10 +10,7 @@ logging = ["log"]
 http_client = ["dep:reqwest", "dep:base64"]
 
 [dependencies]
-docopt = "~1.1"
-env_logger = "0.11.9"
 log = { version = "0.4.29", optional = true }
-mio = { version = "0.8", features = ["net", "os-poll"] }
 serde = "1.0"
 serde_derive = "1.0"
 openmls = { version = "=0.8.1"} # test-utils provides us with ds-lib , features = ["test-utils"]
