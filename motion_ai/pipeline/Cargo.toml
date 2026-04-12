@@ -4,7 +4,9 @@ version = "1.0.0"
 edition = "2024"
 
 [features]
+default = ["replay_backend"]
 mp4_player = ["dep:video-rs"]
+replay_backend = ["dep:tokio", "dep:rocket", "dep:walkdir"]
 
 [dependencies]
 ndarray = { version="0.16.1", features = ["rayon"] }
@@ -29,12 +31,9 @@ anyhow = "1.0.102"
 libblur = { version = "0.17.5"}
 fast_image_resize = { version = "5.5.0", features = ["rayon"]}
 uuid = { version = "1.22.0", features = ["v4"] }
-http = "1.4.0"
-walkdir = "2.5.0"
-tokio = "1.50.0"
-tracing = "0.1.44"
-tracing-subscriber = "0.3.23"
-rocket = { version = "0.5.1", features = ["json"] } #todo: make this feature based
+walkdir = { version = "2.5.0", optional = true }
+tokio = { version = "1.50.0", optional = true }
+rocket = { version = "0.5.1", features = ["json"], optional = true } #todo: make this feature based
 video-rs= { version = "0.10.5", features = ["ndarray"], optional = true }
 crossbeam-channel = "0.5.15"
 flume = "0.11.1"
