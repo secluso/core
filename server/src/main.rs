@@ -46,7 +46,7 @@ pub mod unifiedpush;
 
 use self::auth::{initialize_users, BasicAuth, FailStore};
 use self::fcm::send_notification;
-use self::security::check_path_sandboxed;
+use self::security::{check_path_sandboxed, join_validated_child};
 
 // Store the version of the current crate, which we'll use in all responses.
 #[derive(Default, Clone)]
@@ -362,7 +362,7 @@ async fn upload(
     }
 
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -417,7 +417,10 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: &BasicAuth) -> Json<Vec
         let group_name = pair.group_name;
         let epoch_to_check = pair.epoch_to_check;
 
-        let camera_path = root.join(&group_name);
+        let camera_path = match join_validated_child(&root, &group_name, "camera") {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
         if check_path_sandboxed(&root, &camera_path).is_err() {
             continue;
         }
@@ -450,7 +453,7 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: &BasicAuth) -> Json<Vec
 #[get("/<camera>/<filename>")]
 async fn retrieve(camera: &str, filename: &str, auth: &BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera").ok()?;
     if check_path_sandboxed(&root, &camera_path).is_err() {
         return None;
     }
@@ -482,7 +485,7 @@ async fn remove_file_lock(camera: &str) {
 #[delete("/<camera>/<filename>")]
 async fn delete_file(camera: &str, filename: &str, auth: &BasicAuth) -> Option<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera").ok()?;
 
     if check_path_sandboxed(&root, &camera_path).is_err() {
         return None;
@@ -543,7 +546,7 @@ async fn delete_file(camera: &str, filename: &str, auth: &BasicAuth) -> Option<(
 #[delete("/<camera>")]
 async fn delete_camera(camera: &str, auth: &BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     remove_file_lock(camera).await;
@@ -700,7 +703,7 @@ async fn livestream_start(
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -742,13 +745,21 @@ async fn livestream_check(
     let camera = camera.to_string();
 
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(&camera);
+    let camera_path = join_validated_child(&root, &camera, "camera");
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
     let mut rx = user_state.sender.subscribe();
 
     EventStream! {
-        if check_path_sandboxed(&root, &camera_path).is_err() {
+        let camera_path = match camera_path.as_ref() {
+            Ok(path) => path,
+            Err(_) => {
+                yield Event::data("invalid");
+                return;
+            }
+        };
+
+        if check_path_sandboxed(&root, camera_path).is_err() {
             yield Event::data("invalid");
             return;
         }
@@ -783,7 +794,7 @@ async fn livestream_upload(
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -844,7 +855,7 @@ async fn livestream_retrieve(
     all_state: &rocket::State<AllEventState>,
 ) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera").ok()?;
     if check_path_sandboxed(&root, &camera_path).is_err() {
         return None;
     }
@@ -888,7 +899,7 @@ async fn livestream_retrieve(
 #[post("/livestream_end/<camera>")]
 async fn livestream_end(camera: &str, auth: &BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -911,7 +922,7 @@ async fn config_command(
     all_state: &rocket::State<AllEventState>,
 ) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -949,13 +960,21 @@ async fn config_check(
     let camera = camera.to_string();
 
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(&camera);
+    let camera_path = join_validated_child(&root, &camera, "camera");
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
     let mut rx = user_state.sender.subscribe();
 
     EventStream! {
-        if check_path_sandboxed(&root, &camera_path).is_err() {
+        let camera_path = match camera_path.as_ref() {
+            Ok(path) => path,
+            Err(_) => {
+                yield Event::data("invalid");
+                return;
+            }
+        };
+
+        if check_path_sandboxed(&root, camera_path).is_err() {
             yield Event::data("invalid");
             return;
         }
@@ -998,7 +1017,7 @@ async fn config_check(
 #[post("/config_response/<camera>", data = "<data>")]
 async fn config_response(camera: &str, data: Data<'_>, auth: &BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera")?;
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
@@ -1030,7 +1049,7 @@ async fn config_response(camera: &str, data: Data<'_>, auth: &BasicAuth) -> io::
 #[get("/config_response/<camera>")]
 async fn retrieve_config_response(camera: &str, auth: &BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
-    let camera_path = root.join(camera);
+    let camera_path = join_validated_child(&root, camera, "camera").ok()?;
     if check_path_sandboxed(&root, &camera_path).is_err() {
         return None;
     }
