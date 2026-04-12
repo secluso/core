@@ -34,6 +34,8 @@ tempfile = "3"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "1.1"
+base64 = "0.21"
+sha2 = "0.10"
 secluso-update = { path = "../../update" }
 secluso-client-lib = { path = "../../client_lib" }
 secluso-client-server-lib = { path = "../../client_server_lib" }

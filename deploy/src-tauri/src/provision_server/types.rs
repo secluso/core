@@ -1,5 +1,14 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, Clone)]
+// Used by provision_server::fetch_server_host_key. Host key discovery only
+// needs network coordinates, so we keep it separate from SshTarget and avoid
+// requiring credentials before the UI can show the server fingerprint.
+pub struct SshHostKeyTarget {
+  pub host: String,
+  pub port: u16,
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "kind")]
@@ -29,6 +38,13 @@ pub struct SshTarget {
   pub user: String,
   pub auth: SshAuth,
   pub sudo: SudoSpec,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HostKeyProof {
+  pub algorithm: String,
+  pub sha256: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

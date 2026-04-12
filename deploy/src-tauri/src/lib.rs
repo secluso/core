@@ -17,6 +17,7 @@ pub fn run() {
             pi_hub_provision::generate_user_credentials,
             requirements::check_requirements,
             open_external::open_external_url,
+            provision_server::fetch_server_host_key,
             provision_server::test_server_ssh,
             provision_server::provision_server,
         ])

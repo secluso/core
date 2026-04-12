@@ -1,7 +1,9 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::provision_server::events::log_line;
-use crate::provision_server::types::{SshAuth, SshTarget};
+use crate::provision_server::types::{HostKeyProof, SshAuth, SshHostKeyTarget, SshTarget};
 use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use sha2::{Digest, Sha256};
 use ssh2::Session;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -30,8 +32,8 @@ impl TempKeyFiles {
   }
 }
 
-pub fn connect_ssh(target: &SshTarget) -> Result<(Session, TempKeyFiles)> {
-  let target_addr = format!("{}:{}", target.host, target.port);
+fn connect_tcp(host: &str, port: u16) -> Result<TcpStream> {
+  let target_addr = format!("{host}:{port}");
   let addrs = target_addr
     .to_socket_addrs()
     .with_context(|| format!("Failed to resolve SSH target {}", target_addr))?
@@ -72,14 +74,54 @@ pub fn connect_ssh(target: &SshTarget) -> Result<(Session, TempKeyFiles)> {
 
   tcp.set_read_timeout(Some(SSH_IO_TIMEOUT)).ok();
   tcp.set_write_timeout(Some(SSH_IO_TIMEOUT)).ok();
+  Ok(tcp)
+}
 
+// Split raw transport/handshake from authentication so fetch_host_key and connect_ssh share exactly one connection setup path
+fn handshake_ssh_session(host: &str, port: u16) -> Result<Session> {
+  let tcp = connect_tcp(host, port)?;
   let mut sess = Session::new().context("Failed to create SSH session")?;
   sess.set_timeout(SSH_IO_TIMEOUT.as_millis() as u32);
   sess.set_tcp_stream(tcp);
   sess.handshake().context("SSH handshake failed")?;
+  Ok(sess)
+}
 
-  // host key verification is permissive for now
-  // you can wire known_hosts later if you want accept new behavior
+fn ssh_host_key_algorithm_name(kind: ssh2::HostKeyType) -> &'static str {
+  match kind {
+    ssh2::HostKeyType::Rsa => "ssh-rsa",
+    ssh2::HostKeyType::Dss => "ssh-dss",
+    ssh2::HostKeyType::Ecdsa256 => "ecdsa-sha2-nistp256",
+    ssh2::HostKeyType::Ecdsa384 => "ecdsa-sha2-nistp384",
+    ssh2::HostKeyType::Ecdsa521 => "ecdsa-sha2-nistp521",
+    ssh2::HostKeyType::Ed25519 => "ssh-ed25519",
+    ssh2::HostKeyType::Unknown => "unknown",
+  }
+}
+
+pub fn read_host_key_proof(sess: &Session) -> Result<HostKeyProof> {
+  // Mirror the OpenSSH SHA256:... fingerprint format
+  // plan is for UI to show users the same kind of thing they'd see in a provider console
+  let (host_key, host_key_type) = sess.host_key().context("SSH server did not provide a host key")?;
+  let digest = Sha256::digest(host_key);
+  Ok(HostKeyProof {
+    algorithm: ssh_host_key_algorithm_name(host_key_type).to_string(),
+    sha256: format!("SHA256:{}", STANDARD_NO_PAD.encode(digest)),
+  })
+}
+
+pub fn fetch_host_key(target: &SshHostKeyTarget) -> Result<HostKeyProof> {
+  // Discovery intentionally stops after handshake.
+  // Allows us to show the server identity without changing auth/provision behavior
+  // TODO: If we later offer in the UI some kind of "refresh fingerprint" action, perhaps we should return the raw host key bytes as well so we can compare exact keys when algorithms stay the same but the fingerprint changes (unexpectedly)
+  let sess = handshake_ssh_session(&target.host, target.port)?;
+  read_host_key_proof(&sess)
+}
+
+pub fn connect_ssh(target: &SshTarget) -> Result<(Session, TempKeyFiles)> {
+  let sess = handshake_ssh_session(&target.host, target.port)?;
+  // TODO: Before auth, require the presented host key to match the fingerprint the user explicitly verified in the UI
+  // TODO: When verification fails, show both the expected fingerprint and the newly presented fingerprint so the UI can instruct the user to re-check the server identity instead of showing a generic SSH failure
 
   let mut temps = TempKeyFiles::new();
 

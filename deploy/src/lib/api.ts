@@ -20,6 +20,17 @@ export interface SshTarget {
   sudo: SudoSpec;
 }
 
+export interface SshHostKeyTarget {
+  host: string;
+  port: number;
+}
+
+// Mirrors provision_server/types.rs::HostKeyProof
+export interface HostKeyProof {
+  algorithm: string;
+  sha256: string;
+}
+
 export interface ServerRuntimePlan {
   exposureMode: "direct" | "proxy";
   bindAddress: string;
@@ -75,6 +86,10 @@ export interface ImageBuildRequest {
 
 export async function testServerSsh(target: SshTarget, runtime?: ServerRuntimePlan, serverUrl?: string): Promise<void> {
   await invoke("test_server_ssh", { target, runtime, serverUrl });
+}
+
+export async function fetchServerHostKey(target: SshHostKeyTarget): Promise<HostKeyProof> {
+  return invoke("fetch_server_host_key", { target });
 }
 
 export async function provisionServer(

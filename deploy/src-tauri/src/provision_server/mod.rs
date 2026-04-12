@@ -9,14 +9,24 @@ mod types;
 use crate::provision_server::events::{emit, log_line, step_error, step_ok, step_start, ProvisionEvent};
 use crate::provision_server::preflight::run_preflight;
 use crate::provision_server::provision::run_provision;
-use crate::provision_server::ssh::connect_ssh;
-use crate::provision_server::types::{ServerPlan, ServerRuntimePlan, SshTarget};
+use crate::provision_server::ssh::{connect_ssh, fetch_host_key};
+use crate::provision_server::types::{HostKeyProof, ServerPlan, ServerRuntimePlan, SshHostKeyTarget, SshTarget};
 use anyhow::Result;
 use serde::Serialize;
 use tauri::AppHandle;
 use uuid::Uuid;
 
 // tauri commands
+
+#[tauri::command]
+pub async fn fetch_server_host_key(target: SshHostKeyTarget) -> Result<HostKeyProof, String> {
+  // Host key discovery can block on DNS/TCP/SSH handshake
+  // Thus, we should use async runtime just like test_server_ssh below and provision_server's background worker in this module.
+  tokio::task::spawn_blocking(move || fetch_host_key(&target))
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r.map_err(|e| e.to_string()))
+}
 
 #[tauri::command]
 pub async fn test_server_ssh(app: AppHandle, target: SshTarget, runtime: Option<ServerRuntimePlan>, server_url: Option<String>) -> Result<(), String> {
