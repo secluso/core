@@ -168,7 +168,9 @@ pub fn decrypt_thumbnail_file(
         }
     }
 
-    let dec_filename: String = thumbnail_meta_info.filename;
+    // Do not trust the sender-provided filename here.
+    // The timestamp is the stable identifier for thumbnails, and deriving the path from it prevents path traversal through attacker-crafted metadata.
+    let dec_filename = ThumbnailMetaInfo::get_filename_from_timestamp(thumbnail_meta_info.timestamp);
     let dec_pathname: String = format!("{}/videos/{}", file_dir, dec_filename);
 
     if Path::new(&dec_pathname).exists() {
