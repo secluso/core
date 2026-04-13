@@ -18,6 +18,7 @@ export interface SshTarget {
   user: string;
   auth: SshAuth;
   sudo: SudoSpec;
+  expectedHostKey?: HostKeyProof;
 }
 
 export interface SshHostKeyTarget {

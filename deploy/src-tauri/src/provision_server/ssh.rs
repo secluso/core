@@ -113,15 +113,27 @@ pub fn read_host_key_proof(sess: &Session) -> Result<HostKeyProof> {
 pub fn fetch_host_key(target: &SshHostKeyTarget) -> Result<HostKeyProof> {
   // Discovery intentionally stops after handshake.
   // Allows us to show the server identity without changing auth/provision behavior
-  // TODO: If we later offer in the UI some kind of "refresh fingerprint" action, perhaps we should return the raw host key bytes as well so we can compare exact keys when algorithms stay the same but the fingerprint changes (unexpectedly)
   let sess = handshake_ssh_session(&target.host, target.port)?;
   read_host_key_proof(&sess)
 }
 
 pub fn connect_ssh(target: &SshTarget) -> Result<(Session, TempKeyFiles)> {
   let sess = handshake_ssh_session(&target.host, target.port)?;
-  // TODO: Before auth, require the presented host key to match the fingerprint the user explicitly verified in the UI
-  // TODO: When verification fails, show both the expected fingerprint and the newly presented fingerprint so the UI can instruct the user to re-check the server identity instead of showing a generic SSH failure
+  let presented_host_key = read_host_key_proof(&sess)?;
+  let expected_host_key = target
+    .expected_host_key
+    .as_ref()
+    .context("SSH host key verification is required. Fetch and verify the server fingerprint before continuing.")?;
+
+  if expected_host_key.sha256 != presented_host_key.sha256 || expected_host_key.algorithm != presented_host_key.algorithm {
+    bail!(
+      "SSH host key verification failed. Expected {} {} but the server presented {} {}. Re-check the server fingerprint before continuing.",
+      expected_host_key.algorithm,
+      expected_host_key.sha256,
+      presented_host_key.algorithm,
+      presented_host_key.sha256
+    );
+  }
 
   let mut temps = TempKeyFiles::new();
 

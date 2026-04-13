@@ -38,9 +38,11 @@ pub struct SshTarget {
   pub user: String,
   pub auth: SshAuth,
   pub sudo: SudoSpec,
+  #[serde(rename = "expectedHostKey")]
+  pub expected_host_key: Option<HostKeyProof>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HostKeyProof {
   pub algorithm: String,
