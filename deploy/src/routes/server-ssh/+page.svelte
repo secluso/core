@@ -4,9 +4,11 @@
   import { onDestroy, onMount } from "svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import {
+    fetchServerHostKey,
     listenProvisionEvents,
     testServerSsh,
     provisionServer,
+    type HostKeyProof,
     type ProvisionEvent,
     type ServerRuntimePlan,
     type SshTarget,
@@ -74,13 +76,25 @@
 
   let testing = false;
   let provisioning = false;
+  let fetchingHostKey = false;
   let errorMsg = "";
   let testResult: "ok" | "error" | null = null;
   let testMessage = "";
   let activeTestRunId = "";
   let testProgressTitle = "";
   let testProgressDetail = "";
+  let hostKeyProof: HostKeyProof | null = null;
+  let hostKeyConfirmed = false;
+  let currentTargetKey = "";
+  let verifiedTargetKey = "";
   let unlistenProvision: (() => void) | null = null;
+
+  $: currentTargetKey = `${host.trim()}:${port}`;
+  $: if (verifiedTargetKey && currentTargetKey !== verifiedTargetKey) {
+    hostKeyProof = null;
+    hostKeyConfirmed = false;
+    verifiedTargetKey = "";
+  }
 
   function goBack() {
     goto("/");
@@ -118,6 +132,8 @@
   function validateTarget(): string | null {
     if (!host.trim()) return "Server host/IP is required.";
     if (port < 1 || port > 65535) return "Port must be between 1 and 65535.";
+    if (!hostKeyProof) return "Fetch the SSH host fingerprint before continuing.";
+    if (!hostKeyConfirmed) return "Verify the SSH host fingerprint before continuing.";
     if (!user.trim()) return "Username is required.";
     if (authMode === "password" && !password) return "Password is required.";
     if (authMode === "keyfile" && !keyPath) return "Select a private key file.";
@@ -149,6 +165,48 @@
       text: keyText,
       passphrase: keyPassphrase.trim() ? keyPassphrase : undefined
     };
+  }
+
+  function buildTarget(): SshTarget {
+    return {
+      host: host.trim(),
+      port,
+      user: user.trim(),
+      auth: buildAuth(),
+      sudo: {
+        mode: useSameForSudo ? "same" : "password",
+        password: useSameForSudo ? undefined : sudoPassword
+      },
+      expectedHostKey: hostKeyConfirmed && hostKeyProof ? hostKeyProof : undefined
+    };
+  }
+
+  async function onFetchHostKey() {
+    errorMsg = "";
+    testResult = null;
+    const trimmedHost = host.trim();
+    if (!trimmedHost) {
+      errorMsg = "Server host/IP is required.";
+      return;
+    }
+    if (port < 1 || port > 65535) {
+      errorMsg = "Port must be between 1 and 65535.";
+      return;
+    }
+
+    fetchingHostKey = true;
+    try {
+      hostKeyProof = await fetchServerHostKey({ host: trimmedHost, port });
+      hostKeyConfirmed = false;
+      verifiedTargetKey = `${trimmedHost}:${port}`;
+    } catch (e: any) {
+      hostKeyProof = null;
+      hostKeyConfirmed = false;
+      verifiedTargetKey = "";
+      errorMsg = e?.toString() ?? "Failed to fetch the SSH host fingerprint.";
+    } finally {
+      fetchingHostKey = false;
+    }
   }
 
   function buildRuntimePlan(): ServerRuntimePlan {
@@ -237,18 +295,7 @@
     testing = true;
     testProgressTitle = "Connecting via SSH";
     try {
-      const target: SshTarget = {
-        host,
-        port,
-        user,
-        auth: buildAuth(),
-        sudo: {
-          mode: useSameForSudo ? "same" : "password",
-          password: useSameForSudo ? undefined : sudoPassword
-        }
-      };
-
-      await testServerSsh(target, buildRuntimePlan(), buildCredentialsServerUrl() || undefined);
+      await testServerSsh(buildTarget(), buildRuntimePlan(), buildCredentialsServerUrl() || undefined);
       testResult = "ok";
       testMessage = "Preflight OK. SSH, sudo, OS, port, network, and compatibility checks passed.";
       testProgressTitle = "Preflight complete";
@@ -295,15 +342,6 @@
     }
     provisioning = true;
 
-    const target: SshTarget = {
-      host, port, user,
-      auth: buildAuth(),
-      sudo: {
-        mode: useSameForSudo ? "same" : "password",
-        password: useSameForSudo ? undefined : sudoPassword
-      }
-    };
-
     const sigKeys =
       useDevRepo
         ? [
@@ -337,7 +375,7 @@
     };
 
     try {
-      const { run_id } = await provisionServer(target, plan);
+      const { run_id } = await provisionServer(buildTarget(), plan);
       goto(`/status?mode=server&runId=${encodeURIComponent(run_id)}`);
     } catch (e: any) {
       errorMsg = e?.toString() ?? "Server provisioning failed.";
@@ -505,6 +543,31 @@
           <span>User</span>
           <input placeholder="root" bind:value={user} autocorrect="off" autocapitalize="off" spellcheck="false" />
         </label>
+      </div>
+
+      <div class="verify-card">
+        <div class="verify-card-head">
+          <div class="verify-card-copy">
+            <div class="label">Verify server identity</div>
+            <p class="muted">Fetch the SSH fingerprint, compare it with your provider console or a trusted terminal, then confirm it matches before continuing.</p>
+          </div>
+          <button class="ghost" type="button" on:click={onFetchHostKey} disabled={fetchingHostKey || testing || provisioning}>
+            {fetchingHostKey ? "Fetching…" : "Fetch Fingerprint"}
+          </button>
+        </div>
+
+        {#if hostKeyProof}
+          <label class="field">
+            <span>SSH fingerprint</span>
+            <input readonly value={`${hostKeyProof.algorithm} ${hostKeyProof.sha256}`} />
+            <small class="field-help">If you change the host or port, you will need to fetch and verify it again.</small>
+          </label>
+
+          <label class="switch-row verify-check">
+            <input type="checkbox" bind:checked={hostKeyConfirmed} />
+            <span>I verified this fingerprint belongs to this server</span>
+          </label>
+        {/if}
       </div>
 
       <div class="label">Authentication</div>
@@ -1110,6 +1173,38 @@
     margin-top: 14px;
   }
 
+  .verify-card {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .verify-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .verify-card-copy {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .verify-card-copy .label {
+    margin-top: 0;
+  }
+
+  .field-help {
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 11px;
+    line-height: 16px;
+  }
+
+  .verify-check {
+    margin-top: 16px;
+  }
+
   .hint-card {
     margin-top: 16px;
     min-height: 65px;
@@ -1242,6 +1337,7 @@
     }
     .hero-art { width: 112px; height: 112px; top: -2px; right: -6px; }
     .grid { grid-template-columns: 1fr; }
+    .verify-card-head { flex-direction: column; }
     .field-row { flex-direction: column; }
     .secondary,
     .field-row .ghost { width: 100%; }
