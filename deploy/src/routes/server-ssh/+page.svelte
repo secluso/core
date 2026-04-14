@@ -181,6 +181,32 @@
     };
   }
 
+  function hostKeyPublicFilePath(proof: HostKeyProof | null): string | null {
+    if (!proof) return null;
+    switch (proof.algorithm) {
+      case "ssh-ed25519":
+        return "/etc/ssh/ssh_host_ed25519_key.pub";
+      case "ssh-rsa":
+        return "/etc/ssh/ssh_host_rsa_key.pub";
+      case "ecdsa-sha2-nistp256":
+      case "ecdsa-sha2-nistp384":
+      case "ecdsa-sha2-nistp521":
+        return "/etc/ssh/ssh_host_ecdsa_key.pub";
+      case "ssh-dss":
+        return "/etc/ssh/ssh_host_dsa_key.pub";
+      default:
+        // Keep the UI honest when libssh2 reports a key type we do not yet map
+        // to a standard OpenSSH host key filename.
+        return null;
+    }
+  }
+
+  function hostKeyVerifyCommand(proof: HostKeyProof | null): string | null {
+    // Show the exact ssh-keygen command for the presented host key type so the user does not have to guess which /etc/ssh/*.pub file to inspect.
+    const path = hostKeyPublicFilePath(proof);
+    return path ? `ssh-keygen -lf ${path}` : null;
+  }
+
   async function onFetchHostKey() {
     errorMsg = "";
     testResult = null;
@@ -562,6 +588,19 @@
             <input readonly value={`${hostKeyProof.algorithm} ${hostKeyProof.sha256}`} />
             <small class="field-help">If you change the host or port, you will need to fetch and verify it again.</small>
           </label>
+
+          <div class="verify-help">
+            <div class="verify-help-title">Where to verify it</div>
+            <p class="verify-help-copy">Check this fingerprint in your VPS or cloud provider's web console, or from a trusted terminal already logged into the same server.</p>
+            {#if hostKeyVerifyCommand(hostKeyProof)}
+              <div class="verify-help-command">{hostKeyVerifyCommand(hostKeyProof)}</div>
+              <p class="verify-help-copy">This command checks the exact public host key file that matches the <code>{hostKeyProof.algorithm}</code> key shown above.</p>
+            {:else}
+              <!-- Fallback only for unexpected key types. Don't want to show something invalid. -->
+              <p class="verify-help-copy">This server presented the <code>{hostKeyProof.algorithm}</code> key type. Check the matching public host key file in <code>/etc/ssh</code> from a trusted terminal on the server.</p>
+            {/if}
+            <p class="verify-help-warning">Do not continue if the fingerprint does not match exactly.</p>
+          </div>
 
           <label class="switch-row verify-check">
             <input type="checkbox" bind:checked={hostKeyConfirmed} />
@@ -1203,6 +1242,49 @@
 
   .verify-check {
     margin-top: 16px;
+  }
+
+  .verify-help {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(79, 144, 255, 0.14);
+    background: rgba(79, 144, 255, 0.06);
+  }
+
+  .verify-help-title {
+    color: rgba(255, 255, 255, 0.86);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+  }
+
+  .verify-help-copy {
+    margin: 8px 0 0;
+    color: rgba(255, 255, 255, 0.58);
+    font-size: 12px;
+    line-height: 18px;
+  }
+
+  .verify-help-command {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(3, 7, 18, 0.46);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.88);
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 17px;
+    overflow-x: auto;
+  }
+
+  .verify-help-warning {
+    margin: 10px 0 0;
+    color: #fbbf24;
+    font-size: 12px;
+    line-height: 18px;
+    font-weight: 600;
   }
 
   .hint-card {
