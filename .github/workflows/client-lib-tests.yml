@@ -14,6 +14,9 @@ on:
       - 'client_lib/**'
       - '.github/workflows/client-lib-tests.yml'
 
+permissions:
+  contents: read
+
 jobs:
   test-client-lib:
     runs-on: ubuntu-latest
