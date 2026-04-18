@@ -475,8 +475,9 @@ fn core(
                 info!("Starting to save and send video thumbnail");
                 let thumbnail_info =
                     ThumbnailMetaInfo::new(video_info.timestamp, 0, motion_event.detections); //0 epoch = unset
-                let thumbnail_file =
-                    camera.get_thumbnail_dir() + "/" + &*thumbnail_info.filename.clone();
+                let thumbnail_file = camera.get_thumbnail_dir()
+                    + "/"
+                    + &ThumbnailMetaInfo::get_filename_from_timestamp(thumbnail_info.timestamp);
                 thumbnail_image
                     .save(thumbnail_file)
                     .expect("Failed to save thumbnail PNG file");

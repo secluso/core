@@ -278,7 +278,7 @@ impl DeliveryMonitor {
 
     pub fn get_thumbnail_file_path(&self, info: &ThumbnailMetaInfo) -> PathBuf {
         let video_dir_path = Path::new(&self.thumbnail_dir);
-        video_dir_path.join(&info.filename)
+        video_dir_path.join(ThumbnailMetaInfo::get_filename_from_timestamp(info.timestamp))
     }
 
     pub fn get_enc_video_file_path(&self, info: &VideoInfo) -> PathBuf {

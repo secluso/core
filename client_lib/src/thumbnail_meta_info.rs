@@ -16,7 +16,6 @@ pub struct ThumbnailMetaInfo {
     pub detections: Vec<GeneralDetectionType>,
     pub sanity: String,
     pub epoch: u64,
-    pub filename: String,
 }
 
 pub const THUMBNAIL_SANITY: &str = "thumbbeef";
@@ -32,7 +31,6 @@ impl ThumbnailMetaInfo {
             detections,
             sanity: THUMBNAIL_SANITY.to_string(),
             epoch: thumbnail_epoch,
-            filename: Self::get_filename_from_timestamp(timestamp),
         }
     }
 
