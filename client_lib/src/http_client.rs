@@ -5,12 +5,14 @@
 use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::blocking::{Body, Client, RequestBuilder};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::time::Duration;
+use std::env;
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -76,6 +78,19 @@ impl HttpClient {
         }
     }
 
+    fn give_hint_to_updater() {
+        if let Ok(update_hint_path_str) = env::var("UPDATE_HINT_PATH") {
+            let update_hint_path = Path::new(&update_hint_path_str);
+
+            if !update_hint_path.exists() {
+                if let Err(e) = File::create(update_hint_path) {
+                    eprintln!("Failed to create file: {}", e);
+                }
+                println!("Update hint file created: {}", update_hint_path_str);
+            }
+        }
+    }
+
     /// Atomically confirm pairing with app and receive any phone-side notification target metadata.
     pub fn send_pairing_token(&self, pairing_token: &str) -> io::Result<PairingStatus> {
         let url = format!("{}/pair", self.server_addr);
@@ -96,6 +111,10 @@ impl HttpClient {
             .body(body.to_string())
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !response.status().is_success() {
             return Err(io::Error::new(
@@ -123,6 +142,10 @@ impl HttpClient {
             .get(&url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -188,6 +211,10 @@ impl HttpClient {
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
         if !response.status().is_success() {
             let status = response.status();
             let content_type = response
@@ -251,6 +278,10 @@ impl HttpClient {
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
         if !response.status().is_success() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -289,9 +320,11 @@ impl HttpClient {
         let mut response = self.authorized_headers(client
             .get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-            .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !response.status().is_success() {
             return Err(io::Error::new(
@@ -309,9 +342,11 @@ impl HttpClient {
         let del_response = self.authorized_headers(client
             .delete(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-            .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if del_response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !del_response.status().is_success() {
             return Err(io::Error::new(
@@ -330,9 +365,11 @@ impl HttpClient {
         let response = self.authorized_headers(client
             .delete(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-            .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !response.status().is_success() {
             return Err(io::Error::new(
@@ -355,6 +392,10 @@ impl HttpClient {
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
         if !response.status().is_success() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -375,6 +416,10 @@ impl HttpClient {
             .header("Content-Type", "application/octet-stream")
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !response.status().is_success() {
             return Err(io::Error::new(
@@ -398,9 +443,18 @@ impl HttpClient {
         let response = self.authorized_headers(client
             .get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-            .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", response.status()),
+            ));
+        }
 
         let reader = BufReader::new(response);
 
@@ -443,6 +497,10 @@ impl HttpClient {
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
         if !response.status().is_success() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -477,9 +535,11 @@ impl HttpClient {
         let response = self.authorized_headers(client
             .get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-            .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !response.status().is_success() {
             return Err(io::Error::new(
@@ -496,9 +556,11 @@ impl HttpClient {
         let del_response = self.authorized_headers(client
             .delete(&server_del_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-            .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if del_response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !del_response.status().is_success() {
             return Err(io::Error::new(
@@ -522,6 +584,10 @@ impl HttpClient {
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
         if !response.status().is_success() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -543,6 +609,10 @@ impl HttpClient {
             .body(command)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !response.status().is_success() {
             return Err(io::Error::new(
@@ -568,9 +638,18 @@ impl HttpClient {
         let response = self.authorized_headers(client
             .get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-            .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", response.status()),
+            ));
+        }
 
         let reader = BufReader::new(response);
 
@@ -603,6 +682,10 @@ impl HttpClient {
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
         if !response.status().is_success() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -625,9 +708,11 @@ impl HttpClient {
         let response = self.authorized_headers(client
             .get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-            .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
 
         if !response.status().is_success() {
             return Err(io::Error::new(
