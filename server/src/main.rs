@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::io;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH, SystemTime, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::Engine;
@@ -23,19 +23,19 @@ use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::{Header, Status};
 use rocket::request::{FromRequest, Outcome};
 use rocket::response::content::RawText;
-use rocket::response::stream::{Event, EventStream};
 use rocket::response::status::Custom;
+use rocket::response::stream::{Event, EventStream};
 use rocket::serde::json::Json;
 use rocket::tokio;
 use rocket::tokio::fs::{self, File, OpenOptions};
+use rocket::tokio::io::AsyncWriteExt;
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{channel, Sender};
 use rocket::tokio::sync::Mutex as AsyncMutex;
 use rocket::tokio::sync::Notify;
 use rocket::tokio::task;
 use rocket::tokio::time::timeout;
-use rocket::tokio::io::AsyncWriteExt;
-use rocket::{Response, Request, Shutdown};
+use rocket::{Request, Response, Shutdown};
 use secluso_server_backbone::types::{
     ConfigResponse, GroupTimestamp, MotionPairs, NotificationTarget, PairingRequest,
     PairingResponse, ServerStatus,
@@ -48,7 +48,7 @@ pub mod notification_target;
 pub mod security;
 
 use self::auth::{initialize_users, BasicAuth, FailStore};
-use self::fcm::{send_notification, store_fcm_token, load_fcm_tokens};
+use self::fcm::{load_fcm_tokens, send_notification, store_fcm_token};
 use self::security::{check_path_sandboxed, join_validated_child};
 
 // Store the version of the current crate, which we'll use in all responses.
@@ -184,7 +184,10 @@ async fn pair(
 
     // Check for disallowed quote characters in the token
     if token.is_empty() || token.contains('"') {
-        debug!("[PAIR] Invalid token (empty or contains quote character: {})", token);
+        debug!(
+            "[PAIR] Invalid token (empty or contains quote character: {})",
+            token
+        );
         return Json(PairingResponse {
             status: "invalid_token".into(),
             notification_target: None,
@@ -360,7 +363,10 @@ async fn upload(
 ) -> io::Result<String> {
     // Validate counter (must be less than or equal to MAX_SECONDARY_APPS + 1)
     if counter == 0 || counter > (MAX_SECONDARY_APPS + 1) {
-        return Err(io::Error::other(format!("counter ({counter}) must between 1 and {}", MAX_SECONDARY_APPS + 1)));
+        return Err(io::Error::other(format!(
+            "counter ({counter}) must between 1 and {}",
+            MAX_SECONDARY_APPS + 1
+        )));
     }
 
     let root = Path::new("data").join(&auth.username);
@@ -559,7 +565,7 @@ async fn delete_camera(camera: &str, auth: &BasicAuth) -> io::Result<()> {
 #[post("/fcm_token", data = "<data>")]
 async fn upload_fcm_token(data: Data<'_>, auth: &BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
-    
+
     let token_bytes = data.open(5.kibibytes()).into_bytes().await?;
     let token = String::from_utf8(token_bytes.to_vec())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -706,7 +712,6 @@ async fn send_fcm_notification(
 
         debug!("FCM notification fan-out completed: {success_count} successful sends.");
     });
-
 
     Ok("ok".to_string())
 }
@@ -994,13 +999,12 @@ async fn config_command(
     }
 
     let root = Path::new("data").join(&auth.username);
-    let camera_path = join_validated_child(&root, camera, "camera")
-        .map_err(internal_error)?;
-    check_path_sandboxed(&root, &camera_path)
-        .map_err(internal_error)?;
+    let camera_path = join_validated_child(&root, camera, "camera").map_err(internal_error)?;
+    check_path_sandboxed(&root, &camera_path).map_err(internal_error)?;
 
     if !camera_path.exists() {
-        fs::create_dir_all(&camera_path).await
+        fs::create_dir_all(&camera_path)
+            .await
             .map_err(internal_error)?;
     }
 
@@ -1009,10 +1013,8 @@ async fn config_command(
     let command_path = camera_path.join(&command_file_name);
     let temp_command_path = camera_path.join("command.partial");
 
-    check_path_sandboxed(&root, &command_path)
-        .map_err(internal_error)?;
-    check_path_sandboxed(&root, &temp_command_path)
-        .map_err(internal_error)?;
+    check_path_sandboxed(&root, &command_path).map_err(internal_error)?;
+    check_path_sandboxed(&root, &temp_command_path).map_err(internal_error)?;
 
     let result = async {
         let mut file = fs::File::create(&temp_command_path).await?;
@@ -1025,7 +1027,8 @@ async fn config_command(
         drop(file);
 
         Ok::<u64, io::Error>(bytes_written)
-    }.await;
+    }
+    .await;
 
     let bytes_written = match result {
         Ok(n) => n,
@@ -1048,7 +1051,8 @@ async fn config_command(
         ));
     }
 
-    fs::rename(&temp_command_path, &command_path).await
+    fs::rename(&temp_command_path, &command_path)
+        .await
         .map_err(internal_error)?;
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
@@ -1191,9 +1195,7 @@ async fn retrieve_config_response(camera: &str, auth: &BasicAuth) -> Option<RawT
     let root = Path::new("data").join(&auth.username);
     let camera_path = join_validated_child(&root, camera, "camera").ok()?;
 
-    if check_path_sandboxed(&root, &camera_path).is_err()
-        || !camera_path.exists()
-    {
+    if check_path_sandboxed(&root, &camera_path).is_err() || !camera_path.exists() {
         return None;
     }
 
@@ -1230,9 +1232,7 @@ async fn retrieve_config_response(camera: &str, auth: &BasicAuth) -> Option<RawT
 
         let should_replace = oldest_response
             .as_ref()
-            .is_none_or(|(oldest_timestamp, _)| {
-                timestamp < *oldest_timestamp
-            });
+            .is_none_or(|(oldest_timestamp, _)| timestamp < *oldest_timestamp);
 
         if should_replace {
             oldest_response = Some((timestamp, path));
@@ -1305,10 +1305,7 @@ async fn receive_msg(
 
     let key = (auth.username.clone(), msg_tag.to_string());
 
-    let entry = state
-        .entry(key)
-        .or_insert_with(new_relay_msg_entry)
-        .clone();
+    let entry = state.entry(key).or_insert_with(new_relay_msg_entry).clone();
 
     let result = timeout(RECEIVE_MSG_TIMEOUT, async {
         loop {
@@ -1356,10 +1353,7 @@ async fn send_msg(
 
     let key = (auth.username.clone(), msg_tag.to_string());
 
-    let entry = state
-        .entry(key)
-        .or_insert_with(new_relay_msg_entry)
-        .clone();
+    let entry = state.entry(key).or_insert_with(new_relay_msg_entry).clone();
 
     {
         let mut pending_payload = entry.payload.lock().await;

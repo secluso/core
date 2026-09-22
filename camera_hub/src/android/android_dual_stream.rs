@@ -61,14 +61,13 @@ fn preview_bound(display_width: usize, display_height: usize) -> Option<Resoluti
     // https://developer.android.com/reference/android/hardware/camera2/CameraDevice (under CameraCaptureSession)
     Some(ResolutionBound {
         max_long_side: display_width.max(display_height).min(PREVIEW_MAX_LONG_SIDE),
-        max_short_side: display_width.min(display_height).min(PREVIEW_MAX_SHORT_SIDE),
+        max_short_side: display_width
+            .min(display_height)
+            .min(PREVIEW_MAX_SHORT_SIDE),
     })
 }
 
-fn resolution_fits_bound(
-    resolution: &AndroidCameraResolution,
-    bound: ResolutionBound,
-) -> bool {
+fn resolution_fits_bound(resolution: &AndroidCameraResolution, bound: ResolutionBound) -> bool {
     resolution.width.max(resolution.height) <= bound.max_long_side
         && resolution.width.min(resolution.height) <= bound.max_short_side
 }
@@ -85,8 +84,7 @@ fn detection_stream_resolution(
     resolutions
         .iter()
         .filter(|resolution| {
-            resolution_fits_bound(resolution, preview)
-                && resolution_fits_bound(resolution, target)
+            resolution_fits_bound(resolution, preview) && resolution_fits_bound(resolution, target)
         })
         .cloned()
         .max_by_key(|resolution| {
@@ -146,27 +144,23 @@ pub fn start(
     ps_tx: Sender<Frame>,
     motion_fps: u8,
 ) -> anyhow::Result<AndroidStreamHandle> {
-    let state = Arc::new(AndroidStreamState {
-        frame_queue,
-        ps_tx,
-    });
+    let state = Arc::new(AndroidStreamState { frame_queue, ps_tx });
 
     if facing != ANDROID_CAMERA_FACING_BACK && facing != ANDROID_CAMERA_FACING_FRONT {
-        return Err(anyhow::anyhow!("unsupported Android camera facing: {facing}"));
+        return Err(anyhow::anyhow!(
+            "unsupported Android camera facing: {facing}"
+        ));
     }
 
-    let width = c_int::try_from(width)
-        .map_err(|_| anyhow::anyhow!("Invalid width"))?;
-    let height = c_int::try_from(height)
-        .map_err(|_| anyhow::anyhow!("Invalid height"))?;
+    let width = c_int::try_from(width).map_err(|_| anyhow::anyhow!("Invalid width"))?;
+    let height = c_int::try_from(height).map_err(|_| anyhow::anyhow!("Invalid height"))?;
     if frame_rate_range.min <= 0
         || frame_rate_range.max <= 0
         || frame_rate_range.min > frame_rate_range.max
     {
         return Err(anyhow::anyhow!("Invalid frame rate range"));
     }
-    let bitrate = c_int::try_from(bitrate)
-        .map_err(|_| anyhow::anyhow!("Invalid bitrate"))?;
+    let bitrate = c_int::try_from(bitrate).map_err(|_| anyhow::anyhow!("Invalid bitrate"))?;
     let i_frame_interval = c_int::try_from(i_frame_interval)
         .map_err(|_| anyhow::anyhow!("In valid keyframe interval"))?;
 
@@ -200,11 +194,7 @@ pub fn start(
     })
 }
 
-fn on_h264(
-    state: &AndroidStreamState,
-    data: &[u8],
-    kind: FrameKind,
-) {
+fn on_h264(state: &AndroidStreamState, data: &[u8], kind: FrameKind) {
     if data.is_empty() {
         return;
     }
@@ -221,10 +211,7 @@ fn on_h264(
     add_frame_and_drop_old(Arc::clone(&state.frame_queue), frame);
 }
 
-fn on_aac(
-    state: &AndroidStreamState,
-    data: &[u8]
-) {
+fn on_aac(state: &AndroidStreamState, data: &[u8]) {
     if data.is_empty() {
         return;
     }
@@ -238,12 +225,7 @@ fn on_aac(
     add_frame_and_drop_old(Arc::clone(&state.frame_queue), frame);
 }
 
-fn on_raw_i420(
-    _state: &AndroidStreamState,
-    data: &[u8],
-    width: usize,
-    height: usize,
-) {
+fn on_raw_i420(_state: &AndroidStreamState, data: &[u8], width: usize, height: usize) {
     if data.is_empty() || width == 0 || height == 0 {
         return;
     }
@@ -308,9 +290,8 @@ mod ndk {
 
     use super::{
         detection_stream_resolution, resolution_fits_bound, AndroidCameraFrameRateRange,
-        AndroidCameraResolution, AndroidCameraSpec, ResolutionBound,
-        DETECTION_STREAM_TARGET_HEIGHT, DETECTION_STREAM_TARGET_WIDTH,
-        ANDROID_CAMERA_FACING_BACK, ANDROID_CAMERA_FACING_FRONT,
+        AndroidCameraResolution, AndroidCameraSpec, ResolutionBound, ANDROID_CAMERA_FACING_BACK,
+        ANDROID_CAMERA_FACING_FRONT, DETECTION_STREAM_TARGET_HEIGHT, DETECTION_STREAM_TARGET_WIDTH,
     };
 
     const CAMERA_OK: sys::camera_status_t = sys::camera_status_t(0);
@@ -424,7 +405,9 @@ mod ndk {
         // SAFETY
         // 1. manager is live.
         // 2. ids is writable.
-        if unsafe { sys::ACameraManager_getCameraIdList(manager, &mut ids) } != CAMERA_OK || ids.is_null() {
+        if unsafe { sys::ACameraManager_getCameraIdList(manager, &mut ids) } != CAMERA_OK
+            || ids.is_null()
+        {
             return Err("ACameraManager_getCameraIdList failed".to_string());
         }
 
@@ -461,8 +444,9 @@ mod ndk {
             // 1. manager is live.
             // 2. id_ptr comes from the live camera-id list.
             // 3. metadata is writable.
-            let status =
-                unsafe { sys::ACameraManager_getCameraCharacteristics(manager, id_ptr, &mut metadata) };
+            let status = unsafe {
+                sys::ACameraManager_getCameraCharacteristics(manager, id_ptr, &mut metadata)
+            };
             if status != CAMERA_OK || metadata.is_null() {
                 if !metadata.is_null() {
                     // SAFETY
@@ -482,12 +466,9 @@ mod ndk {
 
             if let Some(spec) = spec {
                 // Avoid duplicate cameras.
-                if !specs
-                    .iter()
-                    .any(|existing: &AndroidCameraCapabilities| {
-                        existing.spec.facing == spec.spec.facing
-                    })
-                {
+                if !specs.iter().any(|existing: &AndroidCameraCapabilities| {
+                    existing.spec.facing == spec.spec.facing
+                }) {
                     specs.push(spec);
                 }
             }
@@ -556,11 +537,13 @@ mod ndk {
         // SAFETY
         // 1. metadata is live.
         // 2. entry is writable.
-        if unsafe { sys::ACameraMetadata_getConstEntry(
-            metadata,
-            sys::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
-            entry.as_mut_ptr(),
-        ) } != CAMERA_OK
+        if unsafe {
+            sys::ACameraMetadata_getConstEntry(
+                metadata,
+                sys::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
+                entry.as_mut_ptr(),
+            )
+        } != CAMERA_OK
         {
             return None;
         }
@@ -605,11 +588,13 @@ mod ndk {
         // SAFETY
         // 1. metadata is live.
         // 2. entry is writable.
-        if unsafe { sys::ACameraMetadata_getConstEntry(
-            metadata,
-            sys::acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS.0,
-            entry.as_mut_ptr(),
-        ) } != CAMERA_OK
+        if unsafe {
+            sys::ACameraMetadata_getConstEntry(
+                metadata,
+                sys::acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS.0,
+                entry.as_mut_ptr(),
+            )
+        } != CAMERA_OK
         {
             return (Vec::new(), Vec::new());
         }
@@ -701,11 +686,13 @@ mod ndk {
         // SAFETY
         // 1. metadata is live.
         // 2. entry is writable.
-        if unsafe { sys::ACameraMetadata_getConstEntry(
-            metadata,
-            sys::acamera_metadata_tag::ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES.0,
-            entry.as_mut_ptr(),
-        ) } != CAMERA_OK
+        if unsafe {
+            sys::ACameraMetadata_getConstEntry(
+                metadata,
+                sys::acamera_metadata_tag::ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES.0,
+                entry.as_mut_ptr(),
+            )
+        } != CAMERA_OK
         {
             return default_frame_rate_ranges();
         }
@@ -768,11 +755,11 @@ mod ndk {
             })?;
             let raw_resolution =
                 available_detection_resolutions_for_facing(config.facing, preview)?
-                .and_then(|resolutions| detection_stream_resolution(&resolutions, preview))
-                .ok_or_else(|| {
-                    "selected Android camera has no valid YUV_420_888 output resolution"
-                        .to_string()
-                })?;
+                    .and_then(|resolutions| detection_stream_resolution(&resolutions, preview))
+                    .ok_or_else(|| {
+                        "selected Android camera has no valid YUV_420_888 output resolution"
+                            .to_string()
+                    })?;
             config.raw_width = c_int::try_from(raw_resolution.width)
                 .map_err(|_| "selected Android camera YUV width is invalid".to_string())?;
             config.raw_height = c_int::try_from(raw_resolution.height)
@@ -960,7 +947,8 @@ mod ndk {
             // SAFETY
             // create_audio_encoder: None.
             // create_audio_recorder: None.
-            self.audio_enabled = unsafe { self.create_audio_encoder() }.is_ok() && unsafe { self.create_audio_recorder() }.is_ok();
+            self.audio_enabled = unsafe { self.create_audio_encoder() }.is_ok()
+                && unsafe { self.create_audio_recorder() }.is_ok();
             if !self.audio_enabled {
                 log::warn!("Android audio disabled; continuing with video-only camera startup");
                 // SAFETY
@@ -1162,7 +1150,9 @@ mod ndk {
             // SAFETY
             // 1. self.manager is live.
             // 2. ids is writable.
-            if unsafe { sys::ACameraManager_getCameraIdList(self.manager, &mut ids) } != CAMERA_OK || ids.is_null() {
+            if unsafe { sys::ACameraManager_getCameraIdList(self.manager, &mut ids) } != CAMERA_OK
+                || ids.is_null()
+            {
                 return self.fail("ACameraManager_getCameraIdList failed");
             }
 
@@ -1185,7 +1175,14 @@ mod ndk {
                 // SAFETY
                 // 1. self.manager is live and id_ptr comes from the live id list.
                 // 2. metadata is writable.
-                if unsafe { sys::ACameraManager_getCameraCharacteristics(self.manager, id_ptr, &mut metadata) } != CAMERA_OK {
+                if unsafe {
+                    sys::ACameraManager_getCameraCharacteristics(
+                        self.manager,
+                        id_ptr,
+                        &mut metadata,
+                    )
+                } != CAMERA_OK
+                {
                     continue;
                 }
 
@@ -1194,11 +1191,14 @@ mod ndk {
                 // SAFETY
                 // 1. metadata is live for this camera.
                 // 2. entry is writable.
-                let matched = if unsafe { sys::ACameraMetadata_getConstEntry(
-                    metadata,
-                    sys::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
-                    entry.as_mut_ptr(),
-                ) } == CAMERA_OK {
+                let matched = if unsafe {
+                    sys::ACameraMetadata_getConstEntry(
+                        metadata,
+                        sys::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
+                        entry.as_mut_ptr(),
+                    )
+                } == CAMERA_OK
+                {
                     // SAFETY
                     // 1. The NDK call that returned entry succeeded and hence it is initialized.
                     let entry = unsafe { entry.assume_init() };
@@ -1245,13 +1245,15 @@ mod ndk {
 
             // SAFETY
             // 1. self.reader is writable.
-            let status = unsafe { sys::AImageReader_new(
-                self.config.raw_width,
-                self.config.raw_height,
-                AIMAGE_FORMAT_YUV_420_888,
-                4, // max number of images that we'll want to access simultaneously
-                &mut self.reader,
-            ) };
+            let status = unsafe {
+                sys::AImageReader_new(
+                    self.config.raw_width,
+                    self.config.raw_height,
+                    AIMAGE_FORMAT_YUV_420_888,
+                    4, // max number of images that we'll want to access simultaneously
+                    &mut self.reader,
+                )
+            };
             if status != MEDIA_OK || self.reader.is_null() {
                 return self.fail("AImageReader_new(YUV_420_888) failed");
             }
@@ -1303,36 +1305,68 @@ mod ndk {
             // SAFETY
             // 1. format is live.
             // 2. video_avc is a valid C string for this call.
-            unsafe { sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, video_avc.as_ptr()) };
+            unsafe {
+                sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, video_avc.as_ptr())
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_WIDTH, self.config.width) };
+            unsafe {
+                sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_WIDTH, self.config.width)
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_HEIGHT, self.config.height) };
+            unsafe {
+                sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_HEIGHT, self.config.height)
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, self.config.bitrate) };
+            unsafe {
+                sys::AMediaFormat_setInt32(
+                    format,
+                    sys::AMEDIAFORMAT_KEY_BIT_RATE,
+                    self.config.bitrate,
+                )
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_FRAME_RATE, self.config.fps_max) };
+            unsafe {
+                sys::AMediaFormat_setInt32(
+                    format,
+                    sys::AMEDIAFORMAT_KEY_FRAME_RATE,
+                    self.config.fps_max,
+                )
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, self.config.i_frame_interval) };
+            unsafe {
+                sys::AMediaFormat_setInt32(
+                    format,
+                    sys::AMEDIAFORMAT_KEY_I_FRAME_INTERVAL,
+                    self.config.i_frame_interval,
+                )
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_COLOR_FORMAT, K_COLOR_FORMAT_SURFACE) };
+            unsafe {
+                sys::AMediaFormat_setInt32(
+                    format,
+                    sys::AMEDIAFORMAT_KEY_COLOR_FORMAT,
+                    K_COLOR_FORMAT_SURFACE,
+                )
+            };
 
             // SAFETY
             // 1. self.encoder and format are live.
             // 2. null surface and crypto are allowed here.
-            let status = unsafe { sys::AMediaCodec_configure(
-                self.encoder,
-                format,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                sys::AMEDIACODEC_CONFIGURE_FLAG_ENCODE as u32,
-            ) };
+            let status = unsafe {
+                sys::AMediaCodec_configure(
+                    self.encoder,
+                    format,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    sys::AMEDIACODEC_CONFIGURE_FLAG_ENCODE as u32,
+                )
+            };
             // SAFETY
             // 1. format was created by the NDK and is no longer used.
             unsafe { sys::AMediaFormat_delete(format) };
@@ -1343,7 +1377,9 @@ mod ndk {
             // SAFETY
             // 1. self.encoder is configured.
             // 2. self.encoder_window is writable.
-            let status = unsafe { sys::AMediaCodec_createInputSurface(self.encoder, &mut self.encoder_window) };
+            let status = unsafe {
+                sys::AMediaCodec_createInputSurface(self.encoder, &mut self.encoder_window)
+            };
             if status != MEDIA_OK || self.encoder_window.is_null() {
                 return self.fail("AMediaCodec_createInputSurface failed");
             }
@@ -1366,7 +1402,8 @@ mod ndk {
             let audio_aac = CString::new("audio/mp4a-latm").unwrap();
             // SAFETY
             // 1. audio_aac is a valid C string for this call.
-            self.audio_encoder = unsafe { sys::AMediaCodec_createEncoderByType(audio_aac.as_ptr()) };
+            self.audio_encoder =
+                unsafe { sys::AMediaCodec_createEncoderByType(audio_aac.as_ptr()) };
             if self.audio_encoder.is_null() {
                 return Err("AMediaCodec_createEncoderByType(audio/mp4a-latm) failed".to_string());
             }
@@ -1381,30 +1418,54 @@ mod ndk {
             // SAFETY
             // 1. format is live.
             // 2. audio_aac is a valid C string for this call.
-            unsafe { sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, audio_aac.as_ptr()) };
+            unsafe {
+                sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, audio_aac.as_ptr())
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_SAMPLE_RATE, K_AUDIO_SAMPLE_RATE) };
+            unsafe {
+                sys::AMediaFormat_setInt32(
+                    format,
+                    sys::AMEDIAFORMAT_KEY_SAMPLE_RATE,
+                    K_AUDIO_SAMPLE_RATE,
+                )
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_CHANNEL_COUNT, K_AUDIO_CHANNEL_COUNT) };
+            unsafe {
+                sys::AMediaFormat_setInt32(
+                    format,
+                    sys::AMEDIAFORMAT_KEY_CHANNEL_COUNT,
+                    K_AUDIO_CHANNEL_COUNT,
+                )
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, K_AUDIO_BITRATE) };
+            unsafe {
+                sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, K_AUDIO_BITRATE)
+            };
             // SAFETY
             // 1. format is live.
-            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_AAC_PROFILE, K_AAC_OBJECT_LC) };
+            unsafe {
+                sys::AMediaFormat_setInt32(
+                    format,
+                    sys::AMEDIAFORMAT_KEY_AAC_PROFILE,
+                    K_AAC_OBJECT_LC,
+                )
+            };
 
             // SAFETY
             // 1. self.audio_encoder and format are live.
             // 2. null surface and crypto are allowed here.
-            let status = unsafe { sys::AMediaCodec_configure(
-                self.audio_encoder,
-                format,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                sys::AMEDIACODEC_CONFIGURE_FLAG_ENCODE as u32,
-            ) };
+            let status = unsafe {
+                sys::AMediaCodec_configure(
+                    self.audio_encoder,
+                    format,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    sys::AMEDIACODEC_CONFIGURE_FLAG_ENCODE as u32,
+                )
+            };
             // SAFETY
             // 1. format was created by the NDK and is no longer used.
             unsafe { sys::AMediaFormat_delete(format) };
@@ -1432,13 +1493,17 @@ mod ndk {
             let mut builder: *mut sys::AAudioStreamBuilder = ptr::null_mut();
             // SAFETY
             // 1. builder is writable.
-            if unsafe { sys::AAudio_createStreamBuilder(&mut builder) } != sys::AAUDIO_OK || builder.is_null() {
+            if unsafe { sys::AAudio_createStreamBuilder(&mut builder) } != sys::AAUDIO_OK
+                || builder.is_null()
+            {
                 return Err("AAudio_createStreamBuilder failed".to_string());
             }
 
             // SAFETY
             // 1. builder is live.
-            unsafe { sys::AAudioStreamBuilder_setDirection(builder, sys::AAUDIO_DIRECTION_INPUT as i32) };
+            unsafe {
+                sys::AAudioStreamBuilder_setDirection(builder, sys::AAUDIO_DIRECTION_INPUT as i32)
+            };
             // SAFETY
             // 1. builder is live.
             unsafe { sys::AAudioStreamBuilder_setSampleRate(builder, K_AUDIO_SAMPLE_RATE) };
@@ -1450,21 +1515,35 @@ mod ndk {
             unsafe { sys::AAudioStreamBuilder_setFormat(builder, sys::AAUDIO_FORMAT_PCM_I16) };
             // SAFETY
             // 1. builder is live.
-            unsafe { sys::AAudioStreamBuilder_setPerformanceMode(builder, sys::AAUDIO_PERFORMANCE_MODE_NONE as i32) };
+            unsafe {
+                sys::AAudioStreamBuilder_setPerformanceMode(
+                    builder,
+                    sys::AAUDIO_PERFORMANCE_MODE_NONE as i32,
+                )
+            };
             // SAFETY
             // 1. builder is live.
-            unsafe { sys::AAudioStreamBuilder_setSharingMode(builder, sys::AAUDIO_SHARING_MODE_SHARED as i32) };
+            unsafe {
+                sys::AAudioStreamBuilder_setSharingMode(
+                    builder,
+                    sys::AAUDIO_SHARING_MODE_SHARED as i32,
+                )
+            };
 
             // SAFETY
             // 1. builder is live.
             // 2. self.audio_stream is writable.
-            let result = unsafe { sys::AAudioStreamBuilder_openStream(builder, &mut self.audio_stream) };
+            let result =
+                unsafe { sys::AAudioStreamBuilder_openStream(builder, &mut self.audio_stream) };
             // SAFETY
             // 1. builder was returned by the NDK and is no longer used.
             unsafe { sys::AAudioStreamBuilder_delete(builder) };
 
             if result != sys::AAUDIO_OK || self.audio_stream.is_null() {
-                return Err("AAudioStreamBuilder_openStream failed; check RECORD_AUDIO permission".to_string());
+                return Err(
+                    "AAudioStreamBuilder_openStream failed; check RECORD_AUDIO permission"
+                        .to_string(),
+                );
             }
             Ok(())
         }
@@ -1520,12 +1599,14 @@ mod ndk {
             // 2. camera_id is a valid C string.
             // 3. self.device is writable.
             // 4. callbacks context points to the live self.callback_state allocation.
-            let status = unsafe { sys::ACameraManager_openCamera(
-                self.manager,
-                camera_id.as_ptr(),
-                &mut callbacks,
-                &mut self.device,
-            ) };
+            let status = unsafe {
+                sys::ACameraManager_openCamera(
+                    self.manager,
+                    camera_id.as_ptr(),
+                    &mut callbacks,
+                    &mut self.device,
+                )
+            };
             if status != CAMERA_OK || self.device.is_null() {
                 return self.fail("ACameraManager_openCamera failed");
             }
@@ -1551,21 +1632,28 @@ mod ndk {
 
             // SAFETY
             // 1. self.outputs is writable.
-            if unsafe { sys::ACaptureSessionOutputContainer_create(&mut self.outputs) } != CAMERA_OK {
+            if unsafe { sys::ACaptureSessionOutputContainer_create(&mut self.outputs) } != CAMERA_OK
+            {
                 return self.fail("ACaptureSessionOutputContainer_create failed");
             }
             // SAFETY
             // 1. self.encoder_window and self.raw_window are live.
             // 2. output pointers are writable.
-            if unsafe { sys::ACaptureSessionOutput_create(self.encoder_window, &mut self.encoder_output) } != CAMERA_OK
-                || unsafe { sys::ACaptureSessionOutput_create(self.raw_window, &mut self.raw_output) } != CAMERA_OK
+            if unsafe {
+                sys::ACaptureSessionOutput_create(self.encoder_window, &mut self.encoder_output)
+            } != CAMERA_OK
+                || unsafe {
+                    sys::ACaptureSessionOutput_create(self.raw_window, &mut self.raw_output)
+                } != CAMERA_OK
             {
                 return self.fail("ACaptureSessionOutput_create failed");
             }
             // SAFETY
             // 1. self.outputs and both outputs are live.
-            if unsafe { sys::ACaptureSessionOutputContainer_add(self.outputs, self.encoder_output) } != CAMERA_OK
-                || unsafe { sys::ACaptureSessionOutputContainer_add(self.outputs, self.raw_output) } != CAMERA_OK
+            if unsafe { sys::ACaptureSessionOutputContainer_add(self.outputs, self.encoder_output) }
+                != CAMERA_OK
+                || unsafe { sys::ACaptureSessionOutputContainer_add(self.outputs, self.raw_output) }
+                    != CAMERA_OK
             {
                 return self.fail("ACaptureSessionOutputContainer_add failed");
             }
@@ -1573,11 +1661,13 @@ mod ndk {
             // SAFETY
             // 1. self.device is live.
             // 2. self.capture_request is writable.
-            if unsafe { sys::ACameraDevice_createCaptureRequest(
-                self.device,
-                sys::ACameraDevice_request_template(3),
-                &mut self.capture_request,
-            ) } != CAMERA_OK
+            if unsafe {
+                sys::ACameraDevice_createCaptureRequest(
+                    self.device,
+                    sys::ACameraDevice_request_template(3),
+                    &mut self.capture_request,
+                )
+            } != CAMERA_OK
             {
                 return self.fail("ACameraDevice_createCaptureRequest failed");
             }
@@ -1585,15 +1675,20 @@ mod ndk {
             // SAFETY
             // 1. self.encoder_window and self.raw_window are live.
             // 2. target pointers are writable.
-            if unsafe { sys::ACameraOutputTarget_create(self.encoder_window, &mut self.encoder_target) } != CAMERA_OK
-                || unsafe { sys::ACameraOutputTarget_create(self.raw_window, &mut self.raw_target) } != CAMERA_OK
+            if unsafe {
+                sys::ACameraOutputTarget_create(self.encoder_window, &mut self.encoder_target)
+            } != CAMERA_OK
+                || unsafe { sys::ACameraOutputTarget_create(self.raw_window, &mut self.raw_target) }
+                    != CAMERA_OK
             {
                 return self.fail("ACameraOutputTarget_create failed");
             }
             // SAFETY
             // 1. self.capture_request and both targets are live.
-            if unsafe { sys::ACaptureRequest_addTarget(self.capture_request, self.encoder_target) } != CAMERA_OK
-                || unsafe { sys::ACaptureRequest_addTarget(self.capture_request, self.raw_target) } != CAMERA_OK
+            if unsafe { sys::ACaptureRequest_addTarget(self.capture_request, self.encoder_target) }
+                != CAMERA_OK
+                || unsafe { sys::ACaptureRequest_addTarget(self.capture_request, self.raw_target) }
+                    != CAMERA_OK
             {
                 return self.fail("ACaptureRequest_addTarget failed");
             }
@@ -1602,12 +1697,14 @@ mod ndk {
             // SAFETY
             // 1. self.capture_request is live.
             // 2. fps_range.as_ptr() is valid for this call.
-            let status = unsafe { sys::ACaptureRequest_setEntry_i32(
-                self.capture_request,
-                sys::acamera_metadata_tag::ACAMERA_CONTROL_AE_TARGET_FPS_RANGE.0,
-                fps_range.len() as u32,
-                fps_range.as_ptr(),
-            ) };
+            let status = unsafe {
+                sys::ACaptureRequest_setEntry_i32(
+                    self.capture_request,
+                    sys::acamera_metadata_tag::ACAMERA_CONTROL_AE_TARGET_FPS_RANGE.0,
+                    fps_range.len() as u32,
+                    fps_range.as_ptr(),
+                )
+            };
             if status != CAMERA_OK {
                 return self.fail("ACaptureRequest_setEntry_i32 fps range failed");
             }
@@ -1625,12 +1722,14 @@ mod ndk {
             // 1. self.device and self.outputs are live.
             // 2. callbacks is valid for this call.
             // 3. self.session is writable.
-            if unsafe { sys::ACameraDevice_createCaptureSession(
-                self.device,
-                self.outputs,
-                &mut session_callbacks,
-                &mut self.session,
-            ) } != CAMERA_OK
+            if unsafe {
+                sys::ACameraDevice_createCaptureSession(
+                    self.device,
+                    self.outputs,
+                    &mut session_callbacks,
+                    &mut self.session,
+                )
+            } != CAMERA_OK
             {
                 return self.fail("ACameraDevice_createCaptureSession failed");
             }
@@ -1638,13 +1737,15 @@ mod ndk {
             let mut request = self.capture_request;
             // SAFETY
             // 1. self.session and request are live.
-            if unsafe { sys::ACameraCaptureSession_setRepeatingRequest(
-                self.session,
-                ptr::null_mut(),
-                1,
-                &mut request,
-                ptr::null_mut(),
-            ) } != CAMERA_OK
+            if unsafe {
+                sys::ACameraCaptureSession_setRepeatingRequest(
+                    self.session,
+                    ptr::null_mut(),
+                    1,
+                    &mut request,
+                    ptr::null_mut(),
+                )
+            } != CAMERA_OK
             {
                 return self.fail("ACameraCaptureSession_setRepeatingRequest failed");
             }
@@ -1679,10 +1780,7 @@ mod ndk {
         fn wait_for_session_closed(&self) {
             let mut session_closed = self.session_closed.lock().unwrap();
             while !*session_closed {
-                session_closed = self
-                    .session_state_changed
-                    .wait(session_closed)
-                    .unwrap();
+                session_closed = self.session_state_changed.wait(session_closed).unwrap();
             }
         }
 
@@ -1709,7 +1807,10 @@ mod ndk {
 
         /// # Safety
         /// 1. If not null, context must point to the live CameraCallbackState registered with the NDK.
-        unsafe extern "C" fn on_camera_disconnected(context: *mut c_void, _device: *mut sys::ACameraDevice) {
+        unsafe extern "C" fn on_camera_disconnected(
+            context: *mut c_void,
+            _device: *mut sys::ACameraDevice,
+        ) {
             // SAFETY
             // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
             if let Some(this) = unsafe { (context as *const Self).as_ref() } {
@@ -1743,7 +1844,10 @@ mod ndk {
         /// # Safety
         /// 1. If not null, context must point to the live CameraCallbackState registered with the NDK.
         /// 2. If callback processing is enabled, reader must remain live until the callback finishes.
-        unsafe extern "C" fn on_image_available(context: *mut c_void, reader: *mut sys::AImageReader) {
+        unsafe extern "C" fn on_image_available(
+            context: *mut c_void,
+            reader: *mut sys::AImageReader,
+        ) {
             if reader.is_null() {
                 return;
             }
@@ -1777,7 +1881,9 @@ mod ndk {
             // SAFETY
             // 1. reader remains live until this enabled callback finishes.
             // 2. image is writable.
-            if unsafe { sys::AImageReader_acquireLatestImage(reader, &mut image) } != MEDIA_OK || image.is_null() {
+            if unsafe { sys::AImageReader_acquireLatestImage(reader, &mut image) } != MEDIA_OK
+                || image.is_null()
+            {
                 return;
             }
 
@@ -1815,19 +1921,35 @@ mod ndk {
                 && unsafe { sys::AImage_getPlanePixelStride(image, 2, &mut v_pix) } == MEDIA_OK;
 
             if ok && !y.is_null() && !u.is_null() && !v.is_null() {
-                let expected =
-                    (self.config.raw_width * self.config.raw_height * 3 / 2) as usize;
+                let expected = (self.config.raw_width * self.config.raw_height * 3 / 2) as usize;
                 let mut i420 = vec![0u8; expected];
                 // SAFETY
                 // 1. Plane pointers and lengths come from the live NDK image.
-                unsafe { copy_yuv420_to_i420(
-                    &mut i420,
-                    self.config.raw_width,
-                    self.config.raw_height,
-                    Plane { ptr: y, len: y_len, row_stride: y_row, pixel_stride: y_pix },
-                    Plane { ptr: u, len: u_len, row_stride: u_row, pixel_stride: u_pix },
-                    Plane { ptr: v, len: v_len, row_stride: v_row, pixel_stride: v_pix },
-                ) };
+                unsafe {
+                    copy_yuv420_to_i420(
+                        &mut i420,
+                        self.config.raw_width,
+                        self.config.raw_height,
+                        Plane {
+                            ptr: y,
+                            len: y_len,
+                            row_stride: y_row,
+                            pixel_stride: y_pix,
+                        },
+                        Plane {
+                            ptr: u,
+                            len: u_len,
+                            row_stride: u_row,
+                            pixel_stride: u_pix,
+                        },
+                        Plane {
+                            ptr: v,
+                            len: v_len,
+                            row_stride: v_row,
+                            pixel_stride: v_pix,
+                        },
+                    )
+                };
                 (self.callbacks.on_raw_i420)(
                     self.callbacks.state.as_ref(),
                     &i420,
@@ -1887,7 +2009,9 @@ mod ndk {
                 // SAFETY
                 // 1. self.encoder is live.
                 // 2. info is writable.
-                let index = unsafe { sys::AMediaCodec_dequeueOutputBuffer(self.encoder, info.as_mut_ptr(), 10_000) };
+                let index = unsafe {
+                    sys::AMediaCodec_dequeueOutputBuffer(self.encoder, info.as_mut_ptr(), 10_000)
+                };
                 if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
                     continue;
                 }
@@ -1909,7 +2033,9 @@ mod ndk {
                 // SAFETY
                 // 1. self.encoder is live and index came from dequeue.
                 // 2. _out_size is writable.
-                let out = unsafe { sys::AMediaCodec_getOutputBuffer(self.encoder, index as usize, &mut _out_size) };
+                let out = unsafe {
+                    sys::AMediaCodec_getOutputBuffer(self.encoder, index as usize, &mut _out_size)
+                };
                 if !out.is_null() && info.size > 0 {
                     let size = info.size as usize;
                     // SAFETY
@@ -1922,7 +2048,9 @@ mod ndk {
                 }
                 // SAFETY
                 // 1. index came from dequeue.
-                unsafe { sys::AMediaCodec_releaseOutputBuffer(self.encoder, index as usize, false) };
+                unsafe {
+                    sys::AMediaCodec_releaseOutputBuffer(self.encoder, index as usize, false)
+                };
             }
         }
 
@@ -1940,12 +2068,9 @@ mod ndk {
         fn split_and_emit_length_prefixed(&self, data: &[u8]) {
             let mut pos = 0usize;
             while pos + 4 <= data.len() {
-                let nal_len = u32::from_be_bytes([
-                    data[pos],
-                    data[pos + 1],
-                    data[pos + 2],
-                    data[pos + 3],
-                ]) as usize;
+                let nal_len =
+                    u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                        as usize;
                 pos += 4;
                 if nal_len == 0 || pos + nal_len > data.len() {
                     return;
@@ -2025,7 +2150,11 @@ mod ndk {
 
         /// # Safety
         /// 1. format must be live for the duration of the call.
-        unsafe fn emit_codec_config_buffer_from_format(&self, format: *mut sys::AMediaFormat, key: &str) {
+        unsafe fn emit_codec_config_buffer_from_format(
+            &self,
+            format: *mut sys::AMediaFormat,
+            key: &str,
+        ) {
             let key = CString::new(key).unwrap();
             let mut buffer: *mut c_void = ptr::null_mut();
             let mut buffer_size = 0usize;
@@ -2033,8 +2162,9 @@ mod ndk {
             // SAFETY
             // 1. format is live and key is a valid C string.
             // 2. buffer outputs are writable.
-            if unsafe { sys::AMediaFormat_getBuffer(format, key.as_ptr(), &mut buffer, &mut buffer_size) }
-                && !buffer.is_null()
+            if unsafe {
+                sys::AMediaFormat_getBuffer(format, key.as_ptr(), &mut buffer, &mut buffer_size)
+            } && !buffer.is_null()
                 && buffer_size > 0
             {
                 // SAFETY
@@ -2084,7 +2214,8 @@ mod ndk {
         /// 1. audio_stream and audio_encoder must remain live while running.
         /// 2. This worker must have exclusive access to audio codec buffers.
         unsafe fn drain_audio_unsafe(&self) {
-            let mut samples = vec![0i16; K_AUDIO_SAMPLES_PER_ACCESS_UNIT * K_AUDIO_CHANNEL_COUNT as usize];
+            let mut samples =
+                vec![0i16; K_AUDIO_SAMPLES_PER_ACCESS_UNIT * K_AUDIO_CHANNEL_COUNT as usize];
             let mut filled_frames = 0usize;
             let mut submitted_frames = 0i64;
 
@@ -2099,12 +2230,14 @@ mod ndk {
                 // SAFETY
                 // 1. self.audio_stream is live.
                 // 2. dst has space for frames_needed audio frames.
-                let frames_read = unsafe { sys::AAudioStream_read(
-                    self.audio_stream,
-                    dst.cast(),
-                    frames_needed as i32,
-                    100_000_000,
-                ) };
+                let frames_read = unsafe {
+                    sys::AAudioStream_read(
+                        self.audio_stream,
+                        dst.cast(),
+                        frames_needed as i32,
+                        100_000_000,
+                    )
+                };
 
                 if frames_read == sys::AAUDIO_ERROR_DISCONNECTED {
                     log::warn!("AAudioStream_read disconnected; stopping audio capture");
@@ -2132,7 +2265,9 @@ mod ndk {
                 let pts_us = submitted_frames * 1_000_000 / K_AUDIO_SAMPLE_RATE as i64;
                 // SAFETY
                 // 1. samples.as_ptr() is valid for byte_count bytes during this call.
-                let audio_bytes = unsafe { std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_count) };
+                let audio_bytes = unsafe {
+                    std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_count)
+                };
 
                 // SAFETY
                 // 1. self.audio_encoder is live.
@@ -2169,7 +2304,8 @@ mod ndk {
 
                 // SAFETY
                 // 1. self.audio_encoder is live.
-                let index = unsafe { sys::AMediaCodec_dequeueInputBuffer(self.audio_encoder, 10_000) };
+                let index =
+                    unsafe { sys::AMediaCodec_dequeueInputBuffer(self.audio_encoder, 10_000) };
                 if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
                     // SAFETY
                     // 1. self.audio_encoder is live.
@@ -2185,11 +2321,26 @@ mod ndk {
                 // SAFETY
                 // 1. index came from dequeue.
                 // 2. capacity is writable.
-                let input = unsafe { sys::AMediaCodec_getInputBuffer(self.audio_encoder, index as usize, &mut capacity) };
+                let input = unsafe {
+                    sys::AMediaCodec_getInputBuffer(
+                        self.audio_encoder,
+                        index as usize,
+                        &mut capacity,
+                    )
+                };
                 if input.is_null() || capacity < len {
                     // SAFETY
                     // 1. index came from dequeue.
-                    let _ = unsafe { sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, 0, pts_us as u64, 0) };
+                    let _ = unsafe {
+                        sys::AMediaCodec_queueInputBuffer(
+                            self.audio_encoder,
+                            index as usize,
+                            0,
+                            0,
+                            pts_us as u64,
+                            0,
+                        )
+                    };
                     return false;
                 }
 
@@ -2199,12 +2350,20 @@ mod ndk {
                 let input = unsafe { std::slice::from_raw_parts_mut(input, capacity) };
 
                 input[..len].copy_from_slice(data);
-                
+
                 // SAFETY
                 // 1. index came from dequeue.
                 // 2. len was checked against capacity.
-                return unsafe { sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, len, pts_us as u64, 0) }
-                    == MEDIA_OK;
+                return unsafe {
+                    sys::AMediaCodec_queueInputBuffer(
+                        self.audio_encoder,
+                        index as usize,
+                        0,
+                        len,
+                        pts_us as u64,
+                        0,
+                    )
+                } == MEDIA_OK;
             }
 
             false
@@ -2223,11 +2382,13 @@ mod ndk {
                 // SAFETY
                 // 1. self.audio_encoder is live.
                 // 2. info is writable.
-                let index = unsafe { sys::AMediaCodec_dequeueOutputBuffer(
-                    self.audio_encoder,
-                    info.as_mut_ptr(),
-                    if wait { 10_000 } else { 0 },
-                ) };
+                let index = unsafe {
+                    sys::AMediaCodec_dequeueOutputBuffer(
+                        self.audio_encoder,
+                        info.as_mut_ptr(),
+                        if wait { 10_000 } else { 0 },
+                    )
+                };
                 if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
                     break;
                 }
@@ -2243,7 +2404,13 @@ mod ndk {
                 // SAFETY
                 // 1. index came from dequeue.
                 // 2. _out_size is writable.
-                let out = unsafe { sys::AMediaCodec_getOutputBuffer(self.audio_encoder, index as usize, &mut _out_size) };
+                let out = unsafe {
+                    sys::AMediaCodec_getOutputBuffer(
+                        self.audio_encoder,
+                        index as usize,
+                        &mut _out_size,
+                    )
+                };
                 let codec_config = (info.flags & sys::AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) != 0;
                 if !codec_config && !out.is_null() && info.size > 0 {
                     let size = info.size as usize;
@@ -2257,7 +2424,9 @@ mod ndk {
                 }
                 // SAFETY
                 // 1. index came from dequeue.
-                unsafe { sys::AMediaCodec_releaseOutputBuffer(self.audio_encoder, index as usize, false) };
+                unsafe {
+                    sys::AMediaCodec_releaseOutputBuffer(self.audio_encoder, index as usize, false)
+                };
 
                 if (info.flags & sys::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0 {
                     break;
@@ -2283,7 +2452,8 @@ mod ndk {
         while i + 3 < data.len() {
             if data[i] == 0
                 && data[i + 1] == 0
-                && (data[i + 2] == 1 || (i + 3 < data.len() && data[i + 2] == 0 && data[i + 3] == 1))
+                && (data[i + 2] == 1
+                    || (i + 3 < data.len() && data[i + 2] == 0 && data[i + 3] == 1))
             {
                 return Some(i);
             }
@@ -2411,17 +2581,17 @@ mod ndk {
                     continue;
                 };
 
-                let Some(u_offset) = row
-                    .checked_mul(u_row_stride)
-                    .and_then(|offset| col.checked_mul(u_pixel_stride).and_then(|col_offset| offset.checked_add(col_offset)))
-                else {
+                let Some(u_offset) = row.checked_mul(u_row_stride).and_then(|offset| {
+                    col.checked_mul(u_pixel_stride)
+                        .and_then(|col_offset| offset.checked_add(col_offset))
+                }) else {
                     continue;
                 };
 
-                let Some(v_offset) = row
-                    .checked_mul(v_row_stride)
-                    .and_then(|offset| col.checked_mul(v_pixel_stride).and_then(|col_offset| offset.checked_add(col_offset)))
-                else {
+                let Some(v_offset) = row.checked_mul(v_row_stride).and_then(|offset| {
+                    col.checked_mul(v_pixel_stride)
+                        .and_then(|col_offset| offset.checked_add(col_offset))
+                }) else {
                     continue;
                 };
 

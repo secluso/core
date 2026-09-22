@@ -6,11 +6,12 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::mls_client::{ClientType, Contact, MlsClient};
     use crate::pairing::NUM_SECRET_BYTES;
-    use crate::mls_client::{MlsClient, Contact, ClientType};
-    use crate::video::{encrypt_video_file, decrypt_video_file,
-        encrypt_thumbnail_file, decrypt_thumbnail_file};
     use crate::thumbnail_meta_info::ThumbnailMetaInfo;
+    use crate::video::{
+        decrypt_thumbnail_file, decrypt_video_file, encrypt_thumbnail_file, encrypt_video_file,
+    };
     use openmls::prelude::QueuedProposal;
     use std::fs::{self, File};
     use std::io;
@@ -27,7 +28,7 @@ mod tests {
         camera_secret: Vec<u8>,
     ) -> io::Result<(MlsClient, MlsClient, Contact, Vec<u8>)> {
         let test_data_path = Path::new("test_data");
-        if test_data_path.exists() { 
+        if test_data_path.exists() {
             fs::remove_dir_all(&test_data_path).unwrap();
         }
         fs::create_dir(&test_data_path).unwrap();
@@ -56,16 +57,13 @@ mod tests {
         )?;
 
         // Exchange key packages, create group, invite, and join
-        let camera_contact =
-            MlsClient::create_contact("app", app.key_package())?;
-        let app_contact =
-            MlsClient::create_contact("camera", camera.key_package())?;
+        let camera_contact = MlsClient::create_contact("app", app.key_package())?;
+        let app_contact = MlsClient::create_contact("camera", camera.key_package())?;
 
         camera.create_group(GROUP_NAME)?;
         camera.save_group_state().unwrap();
 
-        let (welcome_msg_vec, _, _) = camera
-            .invite_with_secret(&camera_contact, camera_secret)?;
+        let (welcome_msg_vec, _, _) = camera.invite_with_secret(&camera_contact, camera_secret)?;
         camera.save_group_state().unwrap();
 
         Ok((camera, app, app_contact, welcome_msg_vec))
@@ -80,12 +78,13 @@ mod tests {
     ) -> io::Result<(MlsClient, MlsClient)> {
         let (camera, mut app, app_contact, welcome_msg_vec) = pair_initial(camera_secret).unwrap();
 
-        app.process_welcome_with_secret(app_contact, welcome_msg_vec, app_secret, GROUP_NAME).unwrap();
+        app.process_welcome_with_secret(app_contact, welcome_msg_vec, app_secret, GROUP_NAME)
+            .unwrap();
         app.save_group_state().unwrap();
 
         Ok((camera, app))
     }
-    
+
     /// This function is a complete, successful pairing process with built-in secrets.
     /// It is used in other tests.
     fn pair() -> (MlsClient, MlsClient) {
@@ -140,7 +139,8 @@ mod tests {
 
         let (_, mut app, app_contact, welcome_msg_vec) = pair_initial(camera_secret).unwrap();
 
-        let welcome_result = app.process_welcome_with_secret(app_contact, welcome_msg_vec, app_secret, GROUP_NAME);
+        let welcome_result =
+            app.process_welcome_with_secret(app_contact, welcome_msg_vec, app_secret, GROUP_NAME);
 
         assert!(welcome_result.is_err());
     }
@@ -152,9 +152,7 @@ mod tests {
 
         // Camera encrypts the message
         let msg = "Hello, app!";
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -172,9 +170,7 @@ mod tests {
 
         // Camera encrypts the message
         let msg = "Hello, app!";
-        let msg_enc = app
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = app.encrypt(msg.as_bytes()).unwrap();
         app.save_group_state().unwrap();
 
         //App decrypts the message
@@ -197,9 +193,7 @@ mod tests {
 
             // Camera encrypts the message
             let msg = format!("Hello, app! -- {i}");
-            let msg_enc = camera
-                .encrypt(msg.as_bytes())
-                .unwrap();
+            let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
             camera.save_group_state().unwrap();
 
             //App decrypts the message
@@ -223,9 +217,7 @@ mod tests {
 
             // Camera encrypts the message
             let msg = format!("Hello, camera! -- {i}");
-            let msg_enc = app
-                .encrypt(msg.as_bytes())
-                .unwrap();
+            let msg_enc = app.encrypt(msg.as_bytes()).unwrap();
             app.save_group_state().unwrap();
 
             //App decrypts the message
@@ -248,9 +240,7 @@ mod tests {
 
         for i in 0..10 {
             let msg = format!("Hello, app! -- {i}");
-            let msg_enc = camera
-                .encrypt(msg.as_bytes())
-                .unwrap();
+            let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
             camera.save_group_state().unwrap();
 
             //App decrypts the message
@@ -309,9 +299,7 @@ mod tests {
             let mut app = reinitialize_app();
 
             let msg = format!("Hello, app! -- {i}");
-            let msg_enc = camera
-                .encrypt(msg.as_bytes())
-                .unwrap();
+            let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
             camera.save_group_state().unwrap();
 
             //App decrypts the message
@@ -368,9 +356,7 @@ mod tests {
         let (mut camera, mut app) = pair();
 
         let msg = format!("Hello, app!");
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -446,9 +432,7 @@ mod tests {
         let (mut camera, mut app) = pair();
 
         let msg = format!("Hello, app!");
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -526,9 +510,7 @@ mod tests {
 
         //Camera generates a message for the pp
         let msg = format!("Hello, app! -- 1");
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -547,9 +529,7 @@ mod tests {
 
         //Camera generates another message for the app
         let msg = format!("Hello, app! -- 2");
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -575,9 +555,7 @@ mod tests {
 
         //Camera generates another message for the app
         let msg = format!("Hello, app! -- 3");
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App successfully decrypts the message
@@ -591,10 +569,7 @@ mod tests {
     /// This function is a complete, successful pairing process with the first
     /// secondary app (app2) with built-in secrets.
     /// It is used in other tests.
-    fn pair_with_app2(
-        camera: &mut MlsClient,
-        app: &mut MlsClient,
-    ) -> MlsClient {
+    fn pair_with_app2(camera: &mut MlsClient, app: &mut MlsClient) -> MlsClient {
         fs::create_dir("test_data/app2").unwrap();
 
         // Add the second app
@@ -604,28 +579,35 @@ mod tests {
             "test_data/app2".to_string(),
             "app2".to_string(),
             ClientType::App,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Exchange key packages, create group, invite, and join
-        let camera_contact =
-            MlsClient::create_contact("app2", app2.key_package()).unwrap();
-        let app2_contact =
-            MlsClient::create_contact("camera", camera.key_package()).unwrap();
+        let camera_contact = MlsClient::create_contact("app2", app2.key_package()).unwrap();
+        let app2_contact = MlsClient::create_contact("camera", camera.key_package()).unwrap();
 
         let new_secret = vec![2u8; NUM_SECRET_BYTES];
 
         let (welcome_msg_vec, psk_proposal_vec, commit_msg_vec) = camera
-            .invite_with_secret(&camera_contact, new_secret.clone()).unwrap();
+            .invite_with_secret(&camera_contact, new_secret.clone())
+            .unwrap();
         camera.save_group_state().unwrap();
         let update_proposals = camera.get_update_proposals().unwrap();
 
-        app2.process_welcome_with_secret(app2_contact, welcome_msg_vec, new_secret.clone(), GROUP_NAME).unwrap();
+        app2.process_welcome_with_secret(
+            app2_contact,
+            welcome_msg_vec,
+            new_secret.clone(),
+            GROUP_NAME,
+        )
+        .unwrap();
         app2.save_group_state().unwrap();
 
         // App merges the psk_proposal and commit for the add operation
         app.store_update_proposals(update_proposals).unwrap();
         app.decrypt(psk_proposal_vec, false).unwrap();
-        app.decrypt_with_secret(commit_msg_vec, false, new_secret).unwrap();
+        app.decrypt_with_secret(commit_msg_vec, false, new_secret)
+            .unwrap();
         app.save_group_state().unwrap();
 
         app2
@@ -646,26 +628,34 @@ mod tests {
             "test_data/app3".to_string(),
             "app3".to_string(),
             ClientType::App,
-        ).unwrap();
+        )
+        .unwrap();
 
-        let camera_contact =
-            MlsClient::create_contact("app3", app3.key_package()).unwrap();
-        let app3_contact =
-            MlsClient::create_contact("camera", camera.key_package()).unwrap();
+        let camera_contact = MlsClient::create_contact("app3", app3.key_package()).unwrap();
+        let app3_contact = MlsClient::create_contact("camera", camera.key_package()).unwrap();
 
         let new_secret = vec![3u8; NUM_SECRET_BYTES];
 
         let update_proposals = camera.get_update_proposals().unwrap();
         let (welcome_msg_vec, psk_proposal_vec, commit_msg_vec) = camera
-            .invite_with_secret(&camera_contact, new_secret.clone()).unwrap();
+            .invite_with_secret(&camera_contact, new_secret.clone())
+            .unwrap();
         camera.save_group_state().unwrap();
 
-        app3.process_welcome_with_secret(app3_contact, welcome_msg_vec, new_secret.clone(), GROUP_NAME).unwrap();
+        app3.process_welcome_with_secret(
+            app3_contact,
+            welcome_msg_vec,
+            new_secret.clone(),
+            GROUP_NAME,
+        )
+        .unwrap();
         app3.save_group_state().unwrap();
 
-        app.store_update_proposals(update_proposals.clone()).unwrap();
+        app.store_update_proposals(update_proposals.clone())
+            .unwrap();
         app.decrypt(psk_proposal_vec.clone(), false).unwrap();
-        app.decrypt_with_secret(commit_msg_vec.clone(), false, new_secret.clone()).unwrap();
+        app.decrypt_with_secret(commit_msg_vec.clone(), false, new_secret.clone())
+            .unwrap();
         app.save_group_state().unwrap();
 
         (app3, psk_proposal_vec, commit_msg_vec, update_proposals)
@@ -681,10 +671,11 @@ mod tests {
     ) {
         // Must be the same as the one in pair_with_app3_handshake()
         let new_secret = vec![3u8; NUM_SECRET_BYTES];
-        
+
         app2.store_update_proposals(update_proposals).unwrap();
         app2.decrypt(psk_proposal_vec, false).unwrap();
-        app2.decrypt_with_secret(commit_msg_vec, false, new_secret).unwrap();
+        app2.decrypt_with_secret(commit_msg_vec, false, new_secret)
+            .unwrap();
         app2.save_group_state().unwrap();
     }
 
@@ -695,9 +686,15 @@ mod tests {
         app: &mut MlsClient,
     ) -> (MlsClient, MlsClient) {
         let mut app2 = pair_with_app2(camera, app);
-        let (app3, psk_proposal_vec, commit_msg_vec, update_proposals) = pair_with_app3_handshake(camera, app);
-        pair_with_app3_inform_app2(&mut app2, psk_proposal_vec, commit_msg_vec, update_proposals);
-        
+        let (app3, psk_proposal_vec, commit_msg_vec, update_proposals) =
+            pair_with_app3_handshake(camera, app);
+        pair_with_app3_inform_app2(
+            &mut app2,
+            psk_proposal_vec,
+            commit_msg_vec,
+            update_proposals,
+        );
+
         (app2, app3)
     }
 
@@ -709,9 +706,7 @@ mod tests {
 
         // Camera encrypts the message
         let msg = "Hello, app!";
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -725,9 +720,7 @@ mod tests {
 
         // Camera encrypts a new message
         let msg = "Hello, apps!";
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -764,9 +757,7 @@ mod tests {
 
         for i in 0..10 {
             let msg = format!("Hello, app! -- {i}");
-            let msg_enc = camera
-                .encrypt(msg.as_bytes())
-                .unwrap();
+            let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
             camera.save_group_state().unwrap();
 
             //App decrypts the message
@@ -858,10 +849,7 @@ mod tests {
         }
     }
 
-    fn generate_dummy_file(
-        pathname: &str,
-        file_size: usize,
-    ) {
+    fn generate_dummy_file(pathname: &str, file_size: usize) {
         let mut video_file = File::create(pathname).unwrap();
 
         let chunk_size = 8192;
@@ -876,10 +864,7 @@ mod tests {
         }
     }
 
-    fn check_decrypted_dummy_file(
-        dec_pathname: &str,
-        expected_file_size: usize,
-    ) {
+    fn check_decrypted_dummy_file(dec_pathname: &str, expected_file_size: usize) {
         let dec_video_file = File::open(dec_pathname).unwrap();
         let metadata = dec_video_file.metadata().unwrap();
 
@@ -914,20 +899,12 @@ mod tests {
         // Camera encrypts video file
         let enc_video_pathname = "test_data/enc_video_file";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_video_pathname,
-            0,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_video_pathname, 0).unwrap();
 
         // App decrypts video file
         fs::create_dir("test_data/app/videos").unwrap();
 
-        let dec_video_filename = decrypt_video_file(
-            &mut app,
-            enc_video_pathname,
-        ).unwrap();
+        let dec_video_filename = decrypt_video_file(&mut app, enc_video_pathname).unwrap();
 
         let dec_video_pathname = format!("test_data/app/videos/{}", dec_video_filename);
 
@@ -948,24 +925,21 @@ mod tests {
 
         // Camera encrypts thumbnail file
         let enc_thumbnail_pathname = "test_data/enc_thumbnail_file";
-        let mut thumbnail_info =
-                    ThumbnailMetaInfo::new(0, 0, vec![]);
+        let mut thumbnail_info = ThumbnailMetaInfo::new(0, 0, vec![]);
 
         encrypt_thumbnail_file(
             &mut camera,
             thumbnail_pathname,
             enc_thumbnail_pathname,
             &mut thumbnail_info,
-        ).unwrap();
+        )
+        .unwrap();
 
         // App decrypts thumbnail file
         fs::create_dir("test_data/app/videos").unwrap();
 
-        let dec_thumbnail_filename = decrypt_thumbnail_file(
-            &mut app,
-            enc_thumbnail_pathname,
-            "test_data",
-        ).unwrap();
+        let dec_thumbnail_filename =
+            decrypt_thumbnail_file(&mut app, enc_thumbnail_pathname, "test_data").unwrap();
 
         let dec_thumbnail_pathname = format!("test_data/app/videos/{}", dec_thumbnail_filename);
 
@@ -989,32 +963,19 @@ mod tests {
         // Camera encrypts the first video file.
         let enc_first_video_pathname = "test_data/enc_video_file_0";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_first_video_pathname,
-            0,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_first_video_pathname, 0).unwrap();
 
         // First video is "lost".
 
         // Camera encrypts the second video file.
         let enc_second_video_pathname = "test_data/enc_video_file_1";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_second_video_pathname,
-            1,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_second_video_pathname, 1).unwrap();
 
         // App tries to decrypt the video file
         fs::create_dir("test_data/app/videos").unwrap();
 
-        let ret = decrypt_video_file(
-            &mut app,
-            enc_second_video_pathname,
-        );
+        let ret = decrypt_video_file(&mut app, enc_second_video_pathname);
 
         assert!(ret.is_err());
     }
@@ -1034,46 +995,39 @@ mod tests {
 
         // Camera encrypts the first thumbnail file
         let enc_first_thumbnail_pathname = "test_data/enc_thumbnail_file_0";
-        let mut first_thumbnail_info =
-                    ThumbnailMetaInfo::new(0, 0, vec![]);
+        let mut first_thumbnail_info = ThumbnailMetaInfo::new(0, 0, vec![]);
 
         encrypt_thumbnail_file(
             &mut camera,
             thumbnail_pathname,
             enc_first_thumbnail_pathname,
             &mut first_thumbnail_info,
-        ).unwrap();
+        )
+        .unwrap();
 
         // First video is "lost".
 
         // Camera encrypts the second thumbnail file
         let enc_second_thumbnail_pathname = "test_data/enc_thumbnail_file_1";
-        let mut second_thumbnail_info =
-                    ThumbnailMetaInfo::new(0, 0, vec![]);
+        let mut second_thumbnail_info = ThumbnailMetaInfo::new(0, 0, vec![]);
 
         encrypt_thumbnail_file(
             &mut camera,
             thumbnail_pathname,
             enc_second_thumbnail_pathname,
             &mut second_thumbnail_info,
-        ).unwrap();
+        )
+        .unwrap();
 
         // App tries to decrypt the second thumbnail file
         fs::create_dir("test_data/app/videos").unwrap();
 
-        let ret = decrypt_thumbnail_file(
-            &mut app,
-            enc_second_thumbnail_pathname,
-            "test_data",
-        );
+        let ret = decrypt_thumbnail_file(&mut app, enc_second_thumbnail_pathname, "test_data");
 
         assert!(ret.is_err());
     }
 
-    fn camera_to_app_video_decrypt_crash(
-        crash_site: &str,
-        crash_site_returns_err: bool,
-    ) {
+    fn camera_to_app_video_decrypt_crash(crash_site: &str, crash_site_returns_err: bool) {
         let (mut camera, mut app) = pair();
 
         // Create input video file to be encrypted (all 0's)
@@ -1085,21 +1039,13 @@ mod tests {
         // Camera encrypts video file
         let enc_video_pathname = "test_data/enc_video_file";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_video_pathname,
-            0,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_video_pathname, 0).unwrap();
 
         // App tires to decrypt video file but it "crashes" halfway.
         fs::create_dir("test_data/app/videos").unwrap();
 
         std::env::set_var(crash_site, "1");
-        let ret = decrypt_video_file(
-            &mut app,
-            enc_video_pathname,
-        );
+        let ret = decrypt_video_file(&mut app, enc_video_pathname);
 
         if crash_site_returns_err {
             assert!(ret.is_err());
@@ -1110,10 +1056,7 @@ mod tests {
         // App reinitializes, tries to decrypt again, and succeeds.
         let mut app = reinitialize_app();
 
-        let dec_video_filename = decrypt_video_file(
-            &mut app,
-            enc_video_pathname,
-        ).unwrap();
+        let dec_video_filename = decrypt_video_file(&mut app, enc_video_pathname).unwrap();
 
         let dec_video_pathname = format!("test_data/app/videos/{}", dec_video_filename);
 
@@ -1149,25 +1092,21 @@ mod tests {
 
         // Camera encrypts thumbnail file
         let enc_thumbnail_pathname = "test_data/enc_thumbnail_file";
-        let mut thumbnail_info =
-                    ThumbnailMetaInfo::new(0, 0, vec![]);
+        let mut thumbnail_info = ThumbnailMetaInfo::new(0, 0, vec![]);
 
         encrypt_thumbnail_file(
             &mut camera,
             thumbnail_pathname,
             enc_thumbnail_pathname,
             &mut thumbnail_info,
-        ).unwrap();
+        )
+        .unwrap();
 
         // App tires to decrypt thumbnail file but it "crashes" halfway.
         fs::create_dir("test_data/app/videos").unwrap();
 
         std::env::set_var("DECRYPT_THUMBNAIL_FILE_CRASH", "1");
-        let ret = decrypt_thumbnail_file(
-            &mut app,
-            enc_thumbnail_pathname,
-            "test_data",
-        );
+        let ret = decrypt_thumbnail_file(&mut app, enc_thumbnail_pathname, "test_data");
 
         assert!(ret.is_err());
 
@@ -1176,11 +1115,8 @@ mod tests {
         // App reinitializes, tries to decrypt again, and succeeds.
         let mut app = reinitialize_app();
 
-        let dec_thumbnail_filename = decrypt_thumbnail_file(
-            &mut app,
-            enc_thumbnail_pathname,
-            "test_data",
-        ).unwrap();
+        let dec_thumbnail_filename =
+            decrypt_thumbnail_file(&mut app, enc_thumbnail_pathname, "test_data").unwrap();
 
         let dec_thumbnail_pathname = format!("test_data/app/videos/{}", dec_thumbnail_filename);
 
@@ -1212,20 +1148,12 @@ mod tests {
         // Camera encrypts video file
         let enc_video_pathname = "test_data/enc_video_file";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_video_pathname,
-            0,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_video_pathname, 0).unwrap();
 
         // App decrypts video file
         fs::create_dir("test_data/app/videos").unwrap();
 
-        let dec_video_filename = decrypt_video_file(
-            &mut app,
-            enc_video_pathname,
-        ).unwrap();
+        let dec_video_filename = decrypt_video_file(&mut app, enc_video_pathname).unwrap();
 
         let dec_video_pathname = format!("test_data/app/videos/{}", dec_video_filename);
 
@@ -1249,28 +1177,16 @@ mod tests {
         // Camera encrypts video file
         let enc_video_pathname = "test_data/enc_video_file";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_video_pathname,
-            0,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_video_pathname, 0).unwrap();
 
-        let mut apps = [
-            (&mut app, "app"),
-            (&mut app2, "app2"),
-            (&mut app3, "app3"),
-        ];
+        let mut apps = [(&mut app, "app"), (&mut app2, "app2"), (&mut app3, "app3")];
 
         for (app, name) in apps.iter_mut() {
             // App decrypts video file
             let dir = format!("test_data/{}/videos", name);
             fs::create_dir(&dir).unwrap();
 
-            let dec_video_filename = decrypt_video_file(
-                *app,
-                enc_video_pathname,
-            ).unwrap();
+            let dec_video_filename = decrypt_video_file(*app, enc_video_pathname).unwrap();
 
             let dec_video_pathname = format!("{}/{}", dir, dec_video_filename);
 
@@ -1309,28 +1225,16 @@ mod tests {
         // Camera encrypts video file
         let enc_video_pathname = "test_data/enc_video_file";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_video_pathname,
-            0,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_video_pathname, 0).unwrap();
 
-        let mut apps = [
-            (&mut app, "app"),
-            (&mut app2, "app2"),
-            (&mut app3, "app3"),
-        ];
+        let mut apps = [(&mut app, "app"), (&mut app2, "app2"), (&mut app3, "app3")];
 
         for (app, name) in apps.iter_mut() {
             // App decrypts video file
             let dir = format!("test_data/{}/videos", name);
             fs::create_dir(&dir).unwrap();
 
-            let dec_video_filename = decrypt_video_file(
-                *app,
-                enc_video_pathname,
-            ).unwrap();
+            let dec_video_filename = decrypt_video_file(*app, enc_video_pathname).unwrap();
 
             let dec_video_pathname = format!("{}/{}", dir, dec_video_filename);
 
@@ -1362,24 +1266,21 @@ mod tests {
 
         // Camera encrypts thumbnail file
         let enc_thumbnail_pathname = "test_data/enc_thumbnail_file";
-        let mut thumbnail_info =
-                    ThumbnailMetaInfo::new(0, 0, vec![]);
+        let mut thumbnail_info = ThumbnailMetaInfo::new(0, 0, vec![]);
 
         encrypt_thumbnail_file(
             &mut camera,
             thumbnail_pathname,
             enc_thumbnail_pathname,
             &mut thumbnail_info,
-        ).unwrap();
+        )
+        .unwrap();
 
         // App decrypts thumbnail file
         fs::create_dir("test_data/app/videos").unwrap();
 
-        let dec_thumbnail_filename = decrypt_thumbnail_file(
-            &mut app,
-            enc_thumbnail_pathname,
-            "test_data",
-        ).unwrap();
+        let dec_thumbnail_filename =
+            decrypt_thumbnail_file(&mut app, enc_thumbnail_pathname, "test_data").unwrap();
 
         let dec_thumbnail_pathname = format!("test_data/app/videos/{}", dec_thumbnail_filename);
 
@@ -1402,32 +1303,25 @@ mod tests {
 
         // Camera encrypts thumbnail file
         let enc_thumbnail_pathname = "test_data/enc_thumbnail_file";
-        let mut thumbnail_info =
-                    ThumbnailMetaInfo::new(0, 0, vec![]);
+        let mut thumbnail_info = ThumbnailMetaInfo::new(0, 0, vec![]);
 
         encrypt_thumbnail_file(
             &mut camera,
             thumbnail_pathname,
             enc_thumbnail_pathname,
             &mut thumbnail_info,
-        ).unwrap();
+        )
+        .unwrap();
 
-        let mut apps = [
-            (&mut app, "app"),
-            (&mut app2, "app2"),
-            (&mut app3, "app3"),
-        ];
+        let mut apps = [(&mut app, "app"), (&mut app2, "app2"), (&mut app3, "app3")];
 
         for (app, name) in apps.iter_mut() {
             // App decrypts thumbnail file
             let dir = format!("test_data/{}/videos", name);
             fs::create_dir(&dir).unwrap();
 
-            let dec_thumbnail_filename = decrypt_thumbnail_file(
-                *app,
-                enc_thumbnail_pathname,
-                "test_data",
-            ).unwrap();
+            let dec_thumbnail_filename =
+                decrypt_thumbnail_file(*app, enc_thumbnail_pathname, "test_data").unwrap();
 
             let dec_thumbnail_pathname = format!("{}/{}", dir, dec_thumbnail_filename);
 
@@ -1465,32 +1359,25 @@ mod tests {
 
         // Camera encrypts thumbnail file
         let enc_thumbnail_pathname = "test_data/enc_thumbnail_file";
-        let mut thumbnail_info =
-                    ThumbnailMetaInfo::new(0, 0, vec![]);
+        let mut thumbnail_info = ThumbnailMetaInfo::new(0, 0, vec![]);
 
         encrypt_thumbnail_file(
             &mut camera,
             thumbnail_pathname,
             enc_thumbnail_pathname,
             &mut thumbnail_info,
-        ).unwrap();
+        )
+        .unwrap();
 
-        let mut apps = [
-            (&mut app, "app"),
-            (&mut app2, "app2"),
-            (&mut app3, "app3"),
-        ];
+        let mut apps = [(&mut app, "app"), (&mut app2, "app2"), (&mut app3, "app3")];
 
         for (app, name) in apps.iter_mut() {
             // App decrypts thumbnail file
             let dir = format!("test_data/{}/videos", name);
             fs::create_dir(&dir).unwrap();
 
-            let dec_thumbnail_filename = decrypt_thumbnail_file(
-                *app,
-                enc_thumbnail_pathname,
-                "test_data",
-            ).unwrap();
+            let dec_thumbnail_filename =
+                decrypt_thumbnail_file(*app, enc_thumbnail_pathname, "test_data").unwrap();
 
             let dec_thumbnail_pathname = format!("{}/{}", dir, dec_thumbnail_filename);
 
@@ -1500,9 +1387,7 @@ mod tests {
     }
 
     /// The input app generates an update proposal and returns it.
-    fn app_update(
-        app: &mut MlsClient,
-    ) -> Vec<u8> {
+    fn app_update(app: &mut MlsClient) -> Vec<u8> {
         let update_proposal = app.update_proposal().unwrap();
         app.save_group_state().unwrap();
 
@@ -1510,19 +1395,13 @@ mod tests {
     }
 
     /// Camera receives the update proposal.
-    fn camera_receive_update_proposal(
-        camera: &mut MlsClient,
-        update_proposal: Vec<u8>,
-    ) {
+    fn camera_receive_update_proposal(camera: &mut MlsClient, update_proposal: Vec<u8>) {
         camera.decrypt(update_proposal, false).unwrap();
         camera.save_group_state().unwrap();
     }
 
     /// Camera receives the update proposal.
-    fn camera_receive_update_proposal_ignore_old(
-        camera: &mut MlsClient,
-        update_proposal: Vec<u8>,
-    ) {
+    fn camera_receive_update_proposal_ignore_old(camera: &mut MlsClient, update_proposal: Vec<u8>) {
         let _ = camera.decrypt(update_proposal, false);
         camera.save_group_state().unwrap();
     }
@@ -1538,10 +1417,7 @@ mod tests {
         let dir = format!("test_data/{}/videos", name);
         fs::create_dir_all(&dir).unwrap();
 
-        let dec_video_filename = decrypt_video_file(
-            app,
-            enc_video_pathname,
-        ).unwrap();
+        let dec_video_filename = decrypt_video_file(app, enc_video_pathname).unwrap();
 
         let dec_video_pathname = format!("{}/{}", dir, dec_video_filename);
 
@@ -1567,7 +1443,7 @@ mod tests {
         // app2 update
         let update_proposal = app_update(&mut app2);
         camera_receive_update_proposal(&mut camera, update_proposal);
-        
+
         // Create input video file to be encrypted (all 0's)
         let video_pathname = "test_data/video_file";
         let file_size: usize = 96 * 1024 + 135;
@@ -1575,18 +1451,19 @@ mod tests {
         generate_dummy_file(video_pathname, file_size);
 
         // Add app3
-        let (mut app3, psk_proposal_vec, commit_msg_vec, update_proposals) = pair_with_app3_handshake(&mut camera, &mut app);
-        pair_with_app3_inform_app2(&mut app2, psk_proposal_vec, commit_msg_vec, update_proposals);
+        let (mut app3, psk_proposal_vec, commit_msg_vec, update_proposals) =
+            pair_with_app3_handshake(&mut camera, &mut app);
+        pair_with_app3_inform_app2(
+            &mut app2,
+            psk_proposal_vec,
+            commit_msg_vec,
+            update_proposals,
+        );
 
         // Camera encrypts video file
         let enc_video_pathname = "test_data/enc_video_file";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_video_pathname,
-            0,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_video_pathname, 0).unwrap();
 
         decrypt_and_check_file(&mut app, "app", enc_video_pathname, file_size);
         decrypt_and_check_file(&mut app2, "app2", enc_video_pathname, file_size);
@@ -1603,7 +1480,8 @@ mod tests {
     fn camera_to_more_apps_update_video_race_test_2() {
         let (mut camera, mut app) = pair();
         let mut app2 = pair_with_app2(&mut camera, &mut app);
-        let (mut app3, psk_proposal_vec, commit_msg_vec, update_proposals) = pair_with_app3_handshake(&mut camera, &mut app);
+        let (mut app3, psk_proposal_vec, commit_msg_vec, update_proposals) =
+            pair_with_app3_handshake(&mut camera, &mut app);
 
         // app1 update
         let update_proposal = app_update(&mut app);
@@ -1612,7 +1490,12 @@ mod tests {
         // app2 update
         let update_proposal = app_update(&mut app2);
 
-        pair_with_app3_inform_app2(&mut app2, psk_proposal_vec, commit_msg_vec, update_proposals);
+        pair_with_app3_inform_app2(
+            &mut app2,
+            psk_proposal_vec,
+            commit_msg_vec,
+            update_proposals,
+        );
         camera_receive_update_proposal_ignore_old(&mut camera, update_proposal);
 
         // app3 update
@@ -1628,12 +1511,7 @@ mod tests {
         // Camera encrypts video file
         let enc_video_pathname = "test_data/enc_video_file";
 
-        encrypt_video_file(
-            &mut camera,
-            video_pathname,
-            enc_video_pathname,
-            0,
-        ).unwrap();
+        encrypt_video_file(&mut camera, video_pathname, enc_video_pathname, 0).unwrap();
 
         decrypt_and_check_file(&mut app, "app", enc_video_pathname, file_size);
         decrypt_and_check_file(&mut app2, "app2", enc_video_pathname, file_size);
@@ -1649,9 +1527,7 @@ mod tests {
 
         // Camera encrypts a new message
         let msg = "Hello, apps!";
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -1693,9 +1569,7 @@ mod tests {
 
         // Camera encrypts a new message
         let msg = "Hello, apps that are not removed!";
-        let msg_enc = camera
-            .encrypt(msg.as_bytes())
-            .unwrap();
+        let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
         //App decrypts the message
@@ -1708,7 +1582,7 @@ mod tests {
         //App2 fails to decrypt the message
         let ret = app2.decrypt(msg_enc.clone(), true);
         app2.save_group_state().unwrap();
-        
+
         assert!(ret.is_err());
 
         //App3 decrypts the message

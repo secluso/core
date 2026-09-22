@@ -5,16 +5,16 @@
 use anyhow::{Context, Result};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use reqwest::Url;
-use secluso_server_backbone::types::{IosRelayBinding, NotificationTarget};
-use std::{env, time::Duration};
-use web_push_native::{p256, Auth, WebPushBuilder};
 use rocket::tokio::fs as tokio_fs;
 use rocket::tokio::io::AsyncWriteExt;
+use rocket::tokio::sync::Mutex;
+use secluso_server_backbone::types::{IosRelayBinding, NotificationTarget};
 use std::collections::HashSet;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::sync::OnceLock;
-use rocket::tokio::sync::Mutex;
+use std::{env, time::Duration};
+use web_push_native::{p256, Auth, WebPushBuilder};
 
 use crate::security::check_path_sandboxed;
 
@@ -411,9 +411,7 @@ pub(crate) async fn store_notification_target(
     for index in 1u64.. {
         let target_path = targets_dir.join(format!(
             "{}{}{}",
-            NOTIFICATION_TARGET_FILE_PREFIX,
-            index,
-            NOTIFICATION_TARGET_FILE_SUFFIX
+            NOTIFICATION_TARGET_FILE_PREFIX, index, NOTIFICATION_TARGET_FILE_SUFFIX
         ));
         check_path_sandboxed(root, &target_path)?;
 

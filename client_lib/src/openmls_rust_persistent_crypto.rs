@@ -10,8 +10,8 @@
 //! This is an implementation of the [`OpenMlsCryptoProvider`] trait to use with
 //! OpenMLS.
 
-use openmls_rust_crypto::{MemoryStorage, RustCrypto};
 use openmls_libcrux_crypto::CryptoProvider;
+use openmls_rust_crypto::{MemoryStorage, RustCrypto};
 use openmls_traits::OpenMlsProvider;
 use std::fs::File;
 
@@ -26,7 +26,7 @@ impl Default for OpenMlsRustPersistentCrypto {
         Self {
             crypto: CryptoProvider::new().unwrap(),
             rand: RustCrypto::default(),
-            storage: MemoryStorage::default()
+            storage: MemoryStorage::default(),
         }
     }
 }

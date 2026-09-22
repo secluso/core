@@ -42,9 +42,9 @@ const GPIO13: u8 = 13;
 
 // ----------------- IR/IR cut filter -----------------
 
-const IN1_PIN: u8 = 17;      // BCM numbering
-const IN2_PIN: u8 = 27;      // BCM numbering
-const SLEEP_PIN: u8 = 4;     // 1=enable bridge, 0=disable bridge
+const IN1_PIN: u8 = 17; // BCM numbering
+const IN2_PIN: u8 = 27; // BCM numbering
+const SLEEP_PIN: u8 = 4; // 1=enable bridge, 0=disable bridge
 const PULSE_MS: u64 = 120;
 
 struct IrCut {
@@ -77,7 +77,6 @@ impl IrCut {
 
         // Disable bridge driver IC
         self.sleep.set_low();
-
     }
 
     fn day(&mut self) {
@@ -104,12 +103,12 @@ impl IrCut {
 const AMBIENT_ADDR: u8 = 0x52;
 
 // Register map (APDS-9306 / APDS-9306-065)
-const REG_MAIN_CTRL: u8 = 0x00;      // ALS_EN is bit 1
-//const REG_ALS_MEAS_RATE: u8 = 0x04;  // default 0x22
-//const REG_ALS_GAIN: u8 = 0x05;       // default 0x01 (gain 3)
-const REG_PART_ID: u8 = 0x06;        // APDS-9306-065 default 0xB3
-const REG_MAIN_STATUS: u8 = 0x07;    // ALS data status bit indicates new data
-const REG_ALS_DATA_0: u8 = 0x0D;     // 0x0D..0x0F = 20-bit ALS result (LSB aligned)
+const REG_MAIN_CTRL: u8 = 0x00; // ALS_EN is bit 1
+                                //const REG_ALS_MEAS_RATE: u8 = 0x04;  // default 0x22
+                                //const REG_ALS_GAIN: u8 = 0x05;       // default 0x01 (gain 3)
+const REG_PART_ID: u8 = 0x06; // APDS-9306-065 default 0xB3
+const REG_MAIN_STATUS: u8 = 0x07; // ALS data status bit indicates new data
+const REG_ALS_DATA_0: u8 = 0x0D; // 0x0D..0x0F = 20-bit ALS result (LSB aligned)
 
 fn als_write_u8<I: I2c>(i2c: &mut I, reg: u8, val: u8) -> core::result::Result<(), I::Error> {
     i2c.write(AMBIENT_ADDR, &[reg, val])
@@ -295,7 +294,11 @@ fn read_temp_c<I: I2c>(i2c: &mut I, addr: u8) -> Result<f32> {
 
     let raw = u16::from_be_bytes(buf);
     let t12 = (raw >> 4) as i16;
-    let signed = if (t12 & 0x0800) != 0 { t12 | !0x0FFF } else { t12 };
+    let signed = if (t12 & 0x0800) != 0 {
+        t12 | !0x0FFF
+    } else {
+        t12
+    };
     Ok((signed as f32) * 0.0625)
 }
 

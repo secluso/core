@@ -3,13 +3,12 @@ use crate::pi_hub_provision::model::SigKey;
 use anyhow::{anyhow, Context, Result};
 use image::Luma;
 use qrcode::QrCode;
-use secluso_client_server_lib::auth::{create_user_credentials};
+use secluso_client_server_lib::auth::create_user_credentials;
 use std::fs;
 use std::path::Path;
 use tauri::AppHandle;
 use url::Url;
 use uuid::Uuid;
-
 
 // TODO: Placeholder for later... make config_tool a library
 pub fn generate_secluso_credentials(
@@ -25,7 +24,6 @@ pub fn generate_secluso_credentials(
     Ok(())
 }
 
-
 // TODO: Placeholder for later... make config_tool a library
 pub fn generate_user_credentials_only(
     _app: &AppHandle,
@@ -36,7 +34,8 @@ pub fn generate_user_credentials_only(
     _sig_keys: Option<&[SigKey]>,
     _github_token: Option<&str>,
 ) -> Result<()> {
-    fs::create_dir_all(work_path).with_context(|| format!("creating work dir {}", work_path.display()))?;
+    fs::create_dir_all(work_path)
+        .with_context(|| format!("creating work dir {}", work_path.display()))?;
 
     let normalized_url = normalize_server_url(server_url)?;
     let (credentials, credentials_full, _) = create_user_credentials(normalized_url)?;
@@ -46,11 +45,17 @@ pub fn generate_user_credentials_only(
     fs::write(work_path.join("credentials_full"), &credentials_full)
         .with_context(|| format!("writing {}", work_path.join("credentials_full").display()))?;
 
-    let qr = QrCode::new(credentials_full).context("Failed to generate user credentials QR code")?;
+    let qr =
+        QrCode::new(credentials_full).context("Failed to generate user credentials QR code")?;
     let qr_image = qr.render::<Luma<u8>>().build();
     qr_image
         .save(work_path.join("user_credentials_qrcode.png"))
-        .with_context(|| format!("saving {}", work_path.join("user_credentials_qrcode.png").display()))?;
+        .with_context(|| {
+            format!(
+                "saving {}",
+                work_path.join("user_credentials_qrcode.png").display()
+            )
+        })?;
 
     Ok(())
 }

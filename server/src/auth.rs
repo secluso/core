@@ -12,6 +12,7 @@ use secluso_client_server_lib::auth::{
 };
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::fs::File;
@@ -22,7 +23,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
-use std::env;
 use subtle::{Choice, ConstantTimeEq};
 
 const DUMMY_PASSWORD: [u8; NUM_PASSWORD_CHARS] = [0u8; NUM_PASSWORD_CHARS];
@@ -117,7 +117,6 @@ fn give_hint_to_updater() {
         }
     }
 }
-
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for &'r BasicAuth {

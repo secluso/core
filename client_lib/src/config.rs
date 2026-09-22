@@ -2,10 +2,12 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use crate::mls_clients::{MlsClients, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
-    MlsClientsCommon, MlsClientsDedicated, NUM_COMMON_MLS_CLIENTS, LIVESTREAM_DED};
-use openmls::prelude::{KeyPackage, QueuedProposal};
+use crate::mls_clients::{
+    MlsClients, MlsClientsCommon, MlsClientsDedicated, LIVESTREAM_DED, MLS_CLIENT_TAGS, MOTION,
+    NUM_COMMON_MLS_CLIENTS, NUM_MLS_CLIENTS, THUMBNAIL,
+};
 use log::{error, info};
+use openmls::prelude::{KeyPackage, QueuedProposal};
 use serde::{Deserialize, Serialize};
 use std::io;
 
@@ -67,21 +69,20 @@ impl HeartbeatRequest {
     ) -> io::Result<()> {
         let mut proposals_i = 0;
         for i in 0..NUM_MLS_CLIENTS {
-            if MLS_CLIENT_TAGS[i] == "motion"
-                || MLS_CLIENT_TAGS[i] == "thumbnail"
-            {
+            if MLS_CLIENT_TAGS[i] == "motion" || MLS_CLIENT_TAGS[i] == "thumbnail" {
                 // It is possible that the update proposal races with an add app commit and end up
                 // being in an older epoch. We just ignore such update proposals. The app will generate
                 // another update in the next heartbeat.
-                let _ =
-                    clients_com[i].decrypt(self.update_proposals[proposals_i].clone(), false);
+                let _ = clients_com[i].decrypt(self.update_proposals[proposals_i].clone(), false);
                 clients_com[i].save_group_state().unwrap();
                 proposals_i += 1;
             } else if MLS_CLIENT_TAGS[i] == "livestream" {
                 // Same comment here as above.
-                let _ =
-                    clients_ded[i - NUM_COMMON_MLS_CLIENTS].decrypt(self.update_proposals[proposals_i].clone(), false);
-                clients_ded[i - NUM_COMMON_MLS_CLIENTS].save_group_state().unwrap();
+                let _ = clients_ded[i - NUM_COMMON_MLS_CLIENTS]
+                    .decrypt(self.update_proposals[proposals_i].clone(), false);
+                clients_ded[i - NUM_COMMON_MLS_CLIENTS]
+                    .save_group_state()
+                    .unwrap();
                 proposals_i += 1;
             }
         }
@@ -121,9 +122,7 @@ impl Heartbeat {
             clients_com[i].save_group_state().unwrap();
             ciphertexts.push(ciphertext);
 
-            if MLS_CLIENT_TAGS[i] == "motion"
-                || MLS_CLIENT_TAGS[i] == "thumbnail"
-            {
+            if MLS_CLIENT_TAGS[i] == "motion" || MLS_CLIENT_TAGS[i] == "thumbnail" {
                 let epoch = clients_com[i].get_epoch()?;
                 epochs.push(epoch);
             }
@@ -133,7 +132,7 @@ impl Heartbeat {
         let ciphertext = clients_ded[LIVESTREAM_DED].encrypt(&timestamp_bytes)?;
         clients_ded[LIVESTREAM_DED].save_group_state().unwrap();
         ciphertexts.push(ciphertext);
-    
+
         let epoch = clients_ded[LIVESTREAM_DED].get_epoch()?;
         epochs.push(epoch);
 
@@ -180,7 +179,10 @@ impl Heartbeat {
                     // cases that these epochs can be within 1 of each other (but not equal) without
                     // meaning that we have a corrupted channel.
                     if epoch.abs_diff(self.epochs[epoch_i]) > 1 {
-                        error!("{}: group epoch = {epoch}, heartbeat epoch = {:?}", MLS_CLIENT_TAGS[i], self.epochs[epoch_i]);
+                        error!(
+                            "{}: group epoch = {epoch}, heartbeat epoch = {:?}",
+                            MLS_CLIENT_TAGS[i], self.epochs[epoch_i]
+                        );
                         return Ok(HeartbeatResult::InvalidEpoch);
                     } else if epoch != self.epochs[epoch_i] {
                         epoch_i += 1;

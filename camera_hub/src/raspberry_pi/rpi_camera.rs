@@ -2,20 +2,20 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::time::Duration;
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::process::Command;
-use std::thread;
-use crate::raspberry_pi::rpi_dual_stream;
 use crate::mp4::mp4_camera::{CameraResolution, Frame, FrameKind, Mp4Camera};
+use crate::raspberry_pi::rpi_dual_stream;
 use crossbeam_channel::unbounded;
 use secluso_motion_ai::logic::pipeline::PipelineController;
 use secluso_motion_ai::pipeline;
+use std::collections::VecDeque;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 /*
 
- 
+
 -use std::time::{Instant, SystemTime, UNIX_EPOCH};
 -use std::{
 -    collections::VecDeque,
@@ -114,7 +114,8 @@ impl Mp4Camera<RaspberryPiPlatform> {
             debug!("Exited controller tick loop");
         });
 
-        let resolution: CameraResolution = Self::fetch_resolution().expect("A supported camera module was not found");
+        let resolution: CameraResolution =
+            Self::fetch_resolution().expect("A supported camera module was not found");
 
         // Start the new shared stream.
         rpi_dual_stream::start(
@@ -127,7 +128,7 @@ impl Mp4Camera<RaspberryPiPlatform> {
             ps_tx,
             motion_fps as u8,
         )
-            .expect("Failed to start shared stream");
+        .expect("Failed to start shared stream");
 
         rpi_dual_stream::start_audio(Arc::clone(&frame_queue))
             .expect("Failed to start audio stream");
@@ -203,7 +204,6 @@ impl Mp4Camera<RaspberryPiPlatform> {
                                          2304x1296 [56.03 fps - (0, 0)/4608x2592 crop]
                                          4608x2592 [14.35 fps - (0, 0)/4608x2592 crop]
         */
-
         let output = Command::new("rpicam-hello")
             .args(["--list-cameras"])
             .output()
@@ -230,6 +230,6 @@ impl Mp4Camera<RaspberryPiPlatform> {
             })
         } else {
             None
-        }
+        };
     }
 }

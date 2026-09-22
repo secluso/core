@@ -9,6 +9,7 @@ use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use plist::Value;
 use reqwest::blocking::Client;
 use reqwest::Url;
+use rocket::tokio::sync::Mutex;
 use secluso_server_backbone::types::ConfigResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -16,9 +17,8 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::io::{self, ErrorKind};
 use std::path::Path;
-use std::{fs, thread, time};
 use std::sync::OnceLock;
-use rocket::tokio::sync::Mutex;
+use std::{fs, thread, time};
 
 use rocket::tokio::fs as tokio_fs;
 use rocket::tokio::io::AsyncWriteExt;

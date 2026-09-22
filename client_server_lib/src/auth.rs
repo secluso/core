@@ -105,6 +105,6 @@ pub fn create_user_credentials(server_addr: String) -> anyhow::Result<(Vec<u8>, 
     let credentials_full_string = serde_json::to_string(&user_credentials)
         .context("Failed to serialize user credentials into JSON")?;
     let credentials_full = credentials_full_string.into_bytes();
-    
+
     Ok((credentials, credentials_full, credentials_full_testing))
 }

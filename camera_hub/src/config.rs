@@ -2,14 +2,14 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use crate::delivery_monitor::DeliveryMonitor;
 use crate::pairing::io::get_names;
 use crate::version::camera_version_info;
-use crate::delivery_monitor::DeliveryMonitor;
 use secluso_client_lib::config::{
     AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated, Heartbeat, HeartbeatRequest,
-    OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE, OPCODE_ADD_APP_INFO,
-    OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE, OPCODE_REMOVE_APP_REQUEST,
-    OPCODE_REMOVE_APP_RESPONSE, OPCODE_REMOVE_APP_INFO,
+    OPCODE_ADD_APP_INFO, OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE, OPCODE_HEARTBEAT_REQUEST,
+    OPCODE_HEARTBEAT_RESPONSE, OPCODE_REMOVE_APP_INFO, OPCODE_REMOVE_APP_REQUEST,
+    OPCODE_REMOVE_APP_RESPONSE,
 };
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::{ClientType, MlsClient};
@@ -174,7 +174,7 @@ fn handle_add_app_request(
 ) -> anyhow::Result<Option<(String, Option<MlsClientsDedicated>)>> {
     let (add_app_requests, secret): ([AddAppRequest; NUM_MLS_CLIENTS], Vec<u8>) =
         bincode::deserialize(command_bytes)
-        .map_err(|e| io::Error::other(format!("Failed to deserialize add_app msg - {e}")))?;
+            .map_err(|e| io::Error::other(format!("Failed to deserialize add_app msg - {e}")))?;
 
     let new_app_name = get_random_name();
 
@@ -207,14 +207,30 @@ fn handle_add_app_request(
 
     let [(client_l, resp_l), (client_c, resp_c)]: [(MlsClient, AddAppResponseDedicated);
         NUM_DEDICATED_MLS_CLIENTS] = [
-        create_client(0, &new_app_name, clients_ded, &add_app_requests, secret.clone())?,
-        create_client(1, &new_app_name, clients_ded, &add_app_requests, secret.clone())?,
+        create_client(
+            0,
+            &new_app_name,
+            clients_ded,
+            &add_app_requests,
+            secret.clone(),
+        )?,
+        create_client(
+            1,
+            &new_app_name,
+            clients_ded,
+            &add_app_requests,
+            secret.clone(),
+        )?,
     ];
 
     let new_clients_ded: MlsClientsDedicated = [client_l, client_c];
     let add_app_resps_ded: [AddAppResponseDedicated; NUM_DEDICATED_MLS_CLIENTS] = [resp_l, resp_c];
 
-    let add_app_resp_combined = (add_app_resps_com.clone(), add_app_resps_ded, new_app_name.clone());
+    let add_app_resp_combined = (
+        add_app_resps_com.clone(),
+        add_app_resps_ded,
+        new_app_name.clone(),
+    );
 
     // Send response
     let mut config_msg = vec![OPCODE_ADD_APP_RESPONSE];
@@ -237,13 +253,14 @@ fn handle_add_app_request(
         other_config_msg.extend(bincode::serialize(&add_app_info)?);
 
         for other_secondary_ded in other_secondary_deds.values_mut() {
-            let other_config_msg_enc = other_secondary_ded[CONFIG_DED].encrypt(&other_config_msg)?;
+            let other_config_msg_enc =
+                other_secondary_ded[CONFIG_DED].encrypt(&other_config_msg)?;
             other_secondary_ded[CONFIG_DED].save_group_state()?;
 
             http_client.config_response(
                 &other_secondary_ded[CONFIG_DED].get_group_name().unwrap(),
                 other_config_msg_enc.clone(),
-            )?;     
+            )?;
         }
     }
 
@@ -296,10 +313,7 @@ fn create_client(
     info!("Added contact.");
 
     let (welcome_msg_vec, _, _) = client
-        .invite_with_secret(
-            &app_contact,
-            secret,
-        )
+        .invite_with_secret(&app_contact, secret)
         .inspect_err(|_| {
             error!("invite() returned error:");
         })?;
@@ -335,16 +349,13 @@ fn handle_remove_app_request(
         return Err(anyhow::anyhow!("Cannot remove unknown secondary app"));
     }
 
-    let remove_app_resps_com: [Vec<u8>; NUM_COMMON_MLS_CLIENTS] =
-        std::array::from_fn(|i| {
-            let remove_msg_vec = clients_com[i]
-                .remove(&app_name)
-                .unwrap();
+    let remove_app_resps_com: [Vec<u8>; NUM_COMMON_MLS_CLIENTS] = std::array::from_fn(|i| {
+        let remove_msg_vec = clients_com[i].remove(&app_name).unwrap();
 
-            clients_com[i].save_group_state().unwrap();
+        clients_com[i].save_group_state().unwrap();
 
-            remove_msg_vec
-        });
+        remove_msg_vec
+    });
 
     // Send response
     let mut config_msg = vec![OPCODE_REMOVE_APP_RESPONSE];
@@ -367,13 +378,14 @@ fn handle_remove_app_request(
         other_config_msg.extend(bincode::serialize(&remove_app_info)?);
 
         for other_secondary_ded in other_secondary_deds.values_mut() {
-            let other_config_msg_enc = other_secondary_ded[CONFIG_DED].encrypt(&other_config_msg)?;
+            let other_config_msg_enc =
+                other_secondary_ded[CONFIG_DED].encrypt(&other_config_msg)?;
             other_secondary_ded[CONFIG_DED].save_group_state()?;
 
             http_client.config_response(
                 &other_secondary_ded[CONFIG_DED].get_group_name().unwrap(),
                 other_config_msg_enc.clone(),
-            )?;     
+            )?;
         }
     }
 

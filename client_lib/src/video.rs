@@ -1,12 +1,12 @@
-use std::fs::{self, File};
-use std::io::{self, Read, Write, BufRead, BufReader, BufWriter};
-use std::time::Instant;
-use std::path::Path;
-use log::{debug, info, error};
-use openmls::prelude::QueuedProposal;
 use crate::mls_client::MlsClient;
-use crate::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
 use crate::thumbnail_meta_info::{ThumbnailMetaInfo, THUMBNAIL_SANITY};
+use crate::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
+use log::{debug, error, info};
+use openmls::prelude::QueuedProposal;
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::path::Path;
+use std::time::Instant;
 
 pub fn decrypt_video_file(
     motion_mls_client: &mut MlsClient,
@@ -170,7 +170,8 @@ pub fn decrypt_thumbnail_file(
 
     // Do not trust the sender-provided filename here.
     // The timestamp is the stable identifier for thumbnails, and deriving the path from it prevents path traversal through attacker-crafted metadata.
-    let dec_filename = ThumbnailMetaInfo::get_filename_from_timestamp(thumbnail_meta_info.timestamp);
+    let dec_filename =
+        ThumbnailMetaInfo::get_filename_from_timestamp(thumbnail_meta_info.timestamp);
     let dec_pathname: String = format!("{}/videos/{}", file_dir, dec_filename);
 
     if Path::new(&dec_pathname).exists() {
@@ -257,8 +258,7 @@ pub fn encrypt_video_file(
     timestamp: u64,
 ) -> io::Result<u64> {
     debug!("Starting to encrypt video.");
-    let mut enc_file =
-        File::create(&enc_pathname).expect("Could not create encrypted video file");
+    let mut enc_file = File::create(&enc_pathname).expect("Could not create encrypted video file");
 
     let update_proposals = motion_mls_client.get_update_proposals()?;
     let update_proposals_msg = bincode::serialize(&update_proposals).unwrap();
@@ -324,8 +324,7 @@ pub fn encrypt_thumbnail_file(
     thumbnail_info: &mut ThumbnailMetaInfo,
 ) -> io::Result<u64> {
     debug!("Starting to encrypt thumbnail.");
-    let mut enc_file =
-        File::create(&enc_pathname).expect("Could not create encrypted video file");
+    let mut enc_file = File::create(&enc_pathname).expect("Could not create encrypted video file");
 
     let update_proposals = thumbnail_mls_client.get_update_proposals()?;
     let update_proposals_msg = bincode::serialize(&update_proposals).unwrap();
@@ -348,9 +347,11 @@ pub fn encrypt_thumbnail_file(
     let mut thumbnail_data: Vec<u8> = Vec::new();
     file.read_to_end(&mut thumbnail_data)?;
 
-    let msg = thumbnail_mls_client.encrypt(&thumbnail_data).inspect_err(|_| {
-        error!("encrypt() returned error:");
-    })?;
+    let msg = thumbnail_mls_client
+        .encrypt(&thumbnail_data)
+        .inspect_err(|_| {
+            error!("encrypt() returned error:");
+        })?;
     append_to_file(&enc_file, msg);
 
     // Here, we first make sure the enc_file is flushed.

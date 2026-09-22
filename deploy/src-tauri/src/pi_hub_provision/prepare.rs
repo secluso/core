@@ -206,12 +206,20 @@ pub fn run_prepare_image(
             "Downloading verified released Secluso image",
         );
         // Fetch the latest immutable GitHub release metadata, derives the expected WIC asset name from the tag, verifies the signed release checksum file, and streams the WIC to the requested output path
-        let (release_tag, image_asset_name) =
-            download_verified_image(app, run_id, &repo, &repo_os, sig_keys, github_token, &output_path).map_err(|e| {
-                let msg = format!("{e:#}");
-                step_error(app, run_id, "image_download", &msg);
-                anyhow!(msg)
-            })?;
+        let (release_tag, image_asset_name) = download_verified_image(
+            app,
+            run_id,
+            &repo,
+            &repo_os,
+            sig_keys,
+            github_token,
+            &output_path,
+        )
+        .map_err(|e| {
+            let msg = format!("{e:#}");
+            step_error(app, run_id, "image_download", &msg);
+            anyhow!(msg)
+        })?;
         log_line(
             app,
             run_id,

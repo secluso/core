@@ -40,49 +40,25 @@ fn run_command_to_completion(program: &str, args: &[&str]) {
 
 fn reset_action() {
     // First, stop the secluso service
-    run_command_to_completion(
-        "systemctl",
-        &["stop", CAMERA_HUB_SERVICE],
-    );
+    run_command_to_completion("systemctl", &["stop", CAMERA_HUB_SERVICE]);
 
     // Second, reset secluso camera hub
-    run_command_to_completion(
-        "/usr/bin/secluso-camera-hub",
-        &["--reset-full"],
-    );
+    run_command_to_completion("/usr/bin/secluso-camera-hub", &["--reset-full"]);
 
     // The previous command, if run successfully, will delete the following three directories.
     // But we'll try to delete them again in case that command failed for some reason.
-    run_command_to_completion(
-        "rm",
-        &["-r", "/data/state"],
-    );
+    run_command_to_completion("rm", &["-r", "/data/state"]);
 
-    run_command_to_completion(
-        "rm",
-        &["-r", "/data/pending_videos"],
-    );
+    run_command_to_completion("rm", &["-r", "/data/pending_videos"]);
 
-    run_command_to_completion(
-        "rm",
-        &["-r", "/data/pending_thumbnails"],
-    );
-    
-    run_command_to_completion(
-        "rm",
-        &["/data/credentials_full"],
-    );
-    
-    run_command_to_completion(
-        "rm",
-        &[DEBUG_LOGS_FILENAME],
-    );
+    run_command_to_completion("rm", &["-r", "/data/pending_thumbnails"]);
+
+    run_command_to_completion("rm", &["/data/credentials_full"]);
+
+    run_command_to_completion("rm", &[DEBUG_LOGS_FILENAME]);
 
     // Finally, start the secluso service
-    run_command_to_completion(
-        "systemctl",
-        &["start", CAMERA_HUB_SERVICE],
-    );
+    run_command_to_completion("systemctl", &["start", CAMERA_HUB_SERVICE]);
 }
 
 fn save_logs_to_file() -> io::Result<()> {

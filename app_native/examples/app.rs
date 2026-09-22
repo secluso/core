@@ -5,19 +5,18 @@
 #[macro_use]
 extern crate serde_derive;
 
+use docopt::Docopt;
 use secluso_app_native::{
-    Clients, add_camera, decrypt_video, deregister, generate_heartbeat_request_config_command,
-    get_group_name, initialize, livestream_decrypt, livestream_update,
-    process_heartbeat_config_response, generate_add_app_request_config_command,
-    process_add_app_config_response, join_camera_groups,
-    get_key_packages, decrypt_thumbnail, generate_remove_app_request_config_command,
-    process_remove_app_config_response,
+    add_camera, decrypt_thumbnail, decrypt_video, deregister,
+    generate_add_app_request_config_command, generate_heartbeat_request_config_command,
+    generate_remove_app_request_config_command, get_group_name, get_key_packages, initialize,
+    join_camera_groups, livestream_decrypt, livestream_update, process_add_app_config_response,
+    process_heartbeat_config_response, process_remove_app_config_response, Clients,
 };
 use secluso_client_lib::http_client::HttpClient;
-use secluso_client_lib::pairing::{NUM_SECRET_BYTES};
+use secluso_client_lib::mls_clients::{MOTION, NUM_MLS_CLIENTS, THUMBNAIL};
+use secluso_client_lib::pairing::NUM_SECRET_BYTES;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
-use secluso_client_lib::mls_clients::{MOTION, THUMBNAIL, NUM_MLS_CLIENTS};
-use docopt::Docopt;
 use std::env;
 use std::fs;
 use std::fs::File;
@@ -43,8 +42,7 @@ const DATA_DIR: &str = "example_app_data";
 pub const MAX_ALLOWED_MSG_LEN: u64 = 65536;
 
 // The name used by the camera to refer to this app.
-static MY_NAME: LazyLock<Mutex<String>> =
-    LazyLock::new(|| Mutex::new(String::new()));
+static MY_NAME: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
 
 const USAGE: &str = "
 Runs a simple Secluso app.
@@ -106,13 +104,15 @@ fn main() -> io::Result<()> {
         }
 
         initialize(&mut clients.lock().unwrap(), format!("{}", DATA_DIR), true)?;
-        
+
         let credentials_full_string = String::from_utf8(credentials_full.to_vec()).unwrap();
 
         let add_camera_result = if !args.flag_secondary_app {
             let file2 = File::open("camera_secret").expect("Cannot open file to send");
-            let mut reader2 =
-                BufReader::with_capacity(file2.metadata().unwrap().len().try_into().unwrap(), file2);
+            let mut reader2 = BufReader::with_capacity(
+                file2.metadata().unwrap().len().try_into().unwrap(),
+                file2,
+            );
             let secret_vec = reader2.fill_buf().unwrap();
 
             add_camera(
@@ -182,12 +182,12 @@ fn main() -> io::Result<()> {
                     println!("Received add_app request.");
                     let mut data_opt = add_app_request_clone.lock().unwrap();
                     *data_opt = Some(data);
-                },
+                }
 
                 Err(e) => {
                     println!("Error listening for add_app requests: {e}");
                 }
-            }        
+            }
         });
     }
 
@@ -249,11 +249,7 @@ fn main_loop(
         if remove_app_needed {
             remove_app_iter -= 1;
             if remove_app_iter <= 0 {
-                remove_app(
-                    Arc::clone(&clients),
-                    &http_client,
-                    &remove_app_name
-                )?;
+                remove_app(Arc::clone(&clients), &http_client, &remove_app_name)?;
             }
         }
 
@@ -289,8 +285,11 @@ fn handle_add_app_request(
 
     let new_app_key_packages_vec = add_app_data.clone();
 
-    let config_msg_enc =
-        generate_add_app_request_config_command(&mut clients.lock().unwrap(), new_app_key_packages_vec, add_app_secret.clone())?;
+    let config_msg_enc = generate_add_app_request_config_command(
+        &mut clients.lock().unwrap(),
+        new_app_key_packages_vec,
+        add_app_secret.clone(),
+    )?;
 
     let config_group_name = get_group_name(&mut clients.lock().unwrap(), "config")?;
 
@@ -324,7 +323,8 @@ fn handle_add_app_request(
         &mut clients.lock().unwrap(),
         config_response.clone(),
         add_app_secret,
-    ).unwrap();
+    )
+    .unwrap();
 
     increment_epoch("motion_epoch");
     increment_epoch("thumbnail_epoch");
@@ -372,10 +372,8 @@ fn remove_app(
 
     let config_response = config_response_opt.unwrap();
 
-    process_remove_app_config_response(
-        &mut clients.lock().unwrap(),
-        config_response.clone(),
-    ).unwrap();
+    process_remove_app_config_response(&mut clients.lock().unwrap(), config_response.clone())
+        .unwrap();
 
     increment_epoch("motion_epoch");
     increment_epoch("thumbnail_epoch");
@@ -517,8 +515,7 @@ fn write_epoch(epoch_filename: &str, epoch: u64) {
     let epoch_file_path = Path::new(DATA_DIR).join(epoch_filename);
 
     let epoch_data = bincode::serialize(&epoch).unwrap();
-    let mut file =
-        fs::File::create(&epoch_file_path).expect("Could not create motion_epoch file");
+    let mut file = fs::File::create(&epoch_file_path).expect("Could not create motion_epoch file");
     file.write_all(&epoch_data).unwrap();
     file.flush().unwrap();
     file.sync_all().unwrap();
@@ -535,7 +532,7 @@ fn fetch_motion_videos(
 ) -> io::Result<()> {
     let mut clients_locked = clients.lock().unwrap();
     let mut epoch = read_epoch("motion_epoch");
-    println!("fetch_motion_videos: checking for epoch {epoch}");  
+    println!("fetch_motion_videos: checking for epoch {epoch}");
 
     loop {
         let group_name = get_group_name(&mut clients_locked, "motion")?;
@@ -546,7 +543,10 @@ fn fetch_motion_videos(
             Ok(_) => {
                 let dec_filename = decrypt_video(&mut clients_locked, enc_filename).unwrap();
                 let _ = fs::remove_file(enc_filepath);
-                println!("Received and decrypted {:?} (epoch = {epoch})", dec_filename);
+                println!(
+                    "Received and decrypted {:?} (epoch = {epoch})",
+                    dec_filename
+                );
                 epoch += 1;
                 write_epoch("motion_epoch", epoch);
 
@@ -578,9 +578,14 @@ fn fetch_thumbnails(
         let enc_filepath = Path::new(DATA_DIR).join("encrypted").join(&enc_filename);
         match http_client.fetch_enc_file(&group_name, &enc_filepath) {
             Ok(_) => {
-                let dec_filename = decrypt_thumbnail(&mut clients_locked, enc_filename, DATA_DIR.to_string()).unwrap();
+                let dec_filename =
+                    decrypt_thumbnail(&mut clients_locked, enc_filename, DATA_DIR.to_string())
+                        .unwrap();
                 let _ = fs::remove_file(enc_filepath);
-                println!("Received and decrypted {:?} (epoch = {epoch})", dec_filename);
+                println!(
+                    "Received and decrypted {:?} (epoch = {epoch})",
+                    dec_filename
+                );
                 epoch += 1;
                 write_epoch("thumbnail_epoch", epoch);
 

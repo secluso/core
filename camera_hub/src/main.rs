@@ -4,15 +4,15 @@ extern crate log;
 #[macro_use]
 extern crate serde_derive;
 
+mod config;
 mod core;
 mod delivery_monitor;
-mod motion;
 mod livestream;
-mod traits;
-mod pairing;
-mod config;
-mod version;
+mod motion;
 mod notification_target;
+mod pairing;
+mod traits;
+mod version;
 
 use cfg_if::cfg_if;
 cfg_if! {
@@ -31,9 +31,9 @@ cfg_if! {
     }
 }
 
- use docopt::Docopt;
- use std::io;
- use crate::core::{run, Args};
+use crate::core::{run, Args};
+use docopt::Docopt;
+use std::io;
 
 const USAGE: &str = "
 Secluso camera hub: connects to an IP camera and send videos to the secluso app end-to-end encrypted (through an untrusted server).

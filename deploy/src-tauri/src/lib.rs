@@ -1,10 +1,10 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 // more tauri command info at https://tauri.app/develop/calling-rust/
 
+mod open_external;
 mod pi_hub_provision;
 mod provision_server;
 mod release_config;
-mod open_external;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

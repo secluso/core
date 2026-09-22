@@ -2,9 +2,9 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::time::Duration;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 //use std::thread;
 use crate::android::android_dual_stream::{self, AndroidCameraSettings};
 use crate::mp4::mp4_camera::{CameraResolution, Frame, FrameKind, Mp4Camera};
@@ -29,12 +29,9 @@ fn bitrate_for_settings(width: usize, height: usize, frame_rate: usize) -> usize
     let denominator = (BASE_WIDTH as u64)
         .saturating_mul(BASE_HEIGHT as u64)
         .saturating_mul(BASE_FRAME_RATE as u64);
-    let scaled = numerator
-        .saturating_add(denominator.saturating_sub(1))
-        / denominator;
+    let scaled = numerator.saturating_add(denominator.saturating_sub(1)) / denominator;
 
-    usize::try_from(scaled.clamp(MIN_BITRATE as u64, MAX_BITRATE as u64))
-        .unwrap_or(MAX_BITRATE)
+    usize::try_from(scaled.clamp(MIN_BITRATE as u64, MAX_BITRATE as u64)).unwrap_or(MAX_BITRATE)
 }
 
 pub struct AndroidPlatform {
@@ -190,7 +187,7 @@ impl Mp4Camera<AndroidPlatform> {
             resolution,
             AndroidPlatform {
                 _stream_handle: stream_handle,
-            }
+            },
         )
     }
 }
