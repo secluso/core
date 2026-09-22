@@ -2,23 +2,23 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+#[cfg(feature = "http_client")]
+use crate::http_client::HttpClient;
 use anyhow::{anyhow, Context};
+use log::{error, info};
 use openmls::prelude::KeyPackage;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::fs::create_dir;
-use std::io::{self, Write, Read, ErrorKind};
-use std::path::Path;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
+use rand::distr::Alphanumeric;
 use rand::distr::Uniform;
 use rand::Rng;
-use rand::distr::Alphanumeric;
-#[cfg(feature = "http_client")]
-use crate::http_client::HttpClient;
-use log::{error, info};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::fs::create_dir;
+use std::io::{self, ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
@@ -333,9 +333,7 @@ pub struct TcpStreamTransport {
 }
 
 impl TcpStreamTransport {
-    pub fn initialize_connect(
-        camera_ip: String,
-    ) -> io::Result<Self> {
+    pub fn initialize_connect(camera_ip: String) -> io::Result<Self> {
         //FIXME: port number hardcoded.
         let addr = SocketAddr::from_str(&(camera_ip + ":12348"))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{e}")))?;
@@ -347,9 +345,7 @@ impl TcpStreamTransport {
     }
 
     pub fn initialize_no_connect() -> io::Result<Self> {
-        Ok(Self {
-            stream: None,
-        })
+        Ok(Self { stream: None })
     }
 }
 
@@ -359,7 +355,10 @@ impl MessageTransport for TcpStreamTransport {
             return write_varying_len(stream, msg);
         }
 
-        Err(io::Error::new(io::ErrorKind::NotConnected, "Not connected."))
+        Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "Not connected.",
+        ))
     }
 
     fn receive_msg(&mut self, _msg_tag: &str) -> io::Result<Vec<u8>> {
@@ -368,7 +367,10 @@ impl MessageTransport for TcpStreamTransport {
                 .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()));
         }
 
-        Err(io::Error::new(io::ErrorKind::NotConnected, "Not connected."))
+        Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "Not connected.",
+        ))
     }
 
     fn wait_for_pairing_request(&mut self) -> io::Result<()> {
@@ -398,15 +400,16 @@ impl RelayTransport {
     ) -> io::Result<Self> {
         let http_client = HttpClient::new(server_addr, server_username, server_password);
         http_client.send_msg("pairing_request", vec![1, 2, 3])?;
-        
+
         let msg = http_client.receive_msg("pairing_request_ack")?;
         if msg != vec![4, 5, 6] {
-            return Err(io::Error::new(io::ErrorKind::Other, "Unexpected pairing_request_ack msg"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Unexpected pairing_request_ack msg",
+            ));
         }
 
-        Ok(Self {
-            http_client,
-        })
+        Ok(Self { http_client })
     }
 
     pub fn initialize_no_connect(
@@ -416,9 +419,7 @@ impl RelayTransport {
     ) -> io::Result<Self> {
         let http_client = HttpClient::new(server_addr, server_username, server_password);
 
-        Ok(Self {
-            http_client,
-        })
+        Ok(Self { http_client })
     }
 }
 
@@ -427,7 +428,10 @@ impl MessageTransport for RelayTransport {
     fn send_msg(&mut self, msg: &[u8], msg_tag: &str) -> io::Result<()> {
         // If RelayTransport is used, all msgs have to have tags.
         if msg_tag.is_empty() {
-            return Err(io::Error::new(ErrorKind::InvalidInput, "msg_tag cannot be empty when using the relay transport"));
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "msg_tag cannot be empty when using the relay transport",
+            ));
         }
         self.http_client.send_msg(msg_tag, msg.to_vec())
     }
@@ -435,7 +439,10 @@ impl MessageTransport for RelayTransport {
     fn receive_msg(&mut self, msg_tag: &str) -> io::Result<Vec<u8>> {
         // If RelayTransport is used, all msgs have to have tags.
         if msg_tag.is_empty() {
-            return Err(io::Error::new(ErrorKind::InvalidInput, "msg_tag cannot be empty when using the relay transport"));
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "msg_tag cannot be empty when using the relay transport",
+            ));
         }
         self.http_client.receive_msg(msg_tag)
     }
@@ -443,10 +450,14 @@ impl MessageTransport for RelayTransport {
     fn wait_for_pairing_request(&mut self) -> io::Result<()> {
         let msg = self.http_client.receive_msg("pairing_request")?;
         if msg != vec![1, 2, 3] {
-            return Err(io::Error::new(io::ErrorKind::Other, "Unexpected pairing_request msg"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Unexpected pairing_request msg",
+            ));
         }
 
-        self.http_client.send_msg("pairing_request_ack", vec![4, 5, 6])?;
+        self.http_client
+            .send_msg("pairing_request_ack", vec![4, 5, 6])?;
 
         Ok(())
     }
@@ -485,7 +496,7 @@ fn read_varying_len(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
         return Err(anyhow!(io::Error::new(
             ErrorKind::InvalidInput,
             "Intended message length is too large",
-        )))
+        )));
     }
 
     let mut msg = vec![0u8; usize::try_from(len)?];
@@ -517,9 +528,7 @@ fn connect_camera_stream(addr: &SocketAddr) -> io::Result<TcpStream> {
     let mut last_error: Option<io::Error> = None;
 
     for attempt in 1..=CAMERA_CONNECT_RETRIES {
-        info!(
-            "Connecting to camera (attempt {attempt}/{CAMERA_CONNECT_RETRIES}, addr={addr})"
-        );
+        info!("Connecting to camera (attempt {attempt}/{CAMERA_CONNECT_RETRIES}, addr={addr})");
 
         match TcpStream::connect_timeout(addr, CAMERA_CONNECT_TIMEOUT) {
             Ok(stream) => {

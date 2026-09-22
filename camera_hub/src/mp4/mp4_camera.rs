@@ -2,24 +2,24 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use std::collections::VecDeque;
 use std::io;
-use std::sync::{Arc, Mutex};
 #[cfg(feature = "android")]
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::motion::MotionResult;
-use crate::traits::Mp4;
-use crate::delivery_monitor::VideoInfo;
-use crate::mp4::fmp4::Fmp4Writer;
-use crate::livestream::LivestreamWriter;
-use crate::mp4::mp4::Mp4Writer;
-use crate::traits::{Camera, CodecParameters};
 #[cfg(feature = "android")]
 use crate::core::STOP_REQUESTED;
+use crate::delivery_monitor::VideoInfo;
+use crate::livestream::LivestreamWriter;
+use crate::motion::MotionResult;
+use crate::mp4::fmp4::Fmp4Writer;
 use crate::mp4::mp4::write_box;
+use crate::mp4::mp4::Mp4Writer;
+use crate::traits::Mp4;
+use crate::traits::{Camera, CodecParameters};
 
 use anyhow::Error;
 use bytes::{BufMut, BytesMut};
@@ -92,8 +92,7 @@ impl<P> Mp4Camera<P> {
         frame_queue: Arc<Mutex<VecDeque<Frame>>>,
         sps_frame: Frame,
         pps_frame: Frame,
-        #[cfg(feature = "raspberry")]
-        motion_detection: Arc<Mutex<PipelineController>>,
+        #[cfg(feature = "raspberry")] motion_detection: Arc<Mutex<PipelineController>>,
         resolution: CameraResolution,
         platform: P,
     ) -> Self {
@@ -173,12 +172,9 @@ impl<P> Mp4Camera<P> {
                         .timestamp
                         .duration_since(first_timestamp)
                         .unwrap_or_default();
-                    let capture_timestamp = elapsed
-                        .as_secs()
-                        .saturating_mul(90_000)
-                        .saturating_add(
-                            u64::from(elapsed.subsec_nanos())
-                                .saturating_mul(90_000)
+                    let capture_timestamp =
+                        elapsed.as_secs().saturating_mul(90_000).saturating_add(
+                            u64::from(elapsed.subsec_nanos()).saturating_mul(90_000)
                                 / 1_000_000_000,
                         );
                     let ts = match last_video_timestamp {
@@ -277,7 +273,7 @@ impl<P> Mp4Camera<P> {
 
         let sps_bytes = sps_frame.data[sps_start_len..].to_vec();
         let pps_bytes = pps_frame.data[pps_start_len..].to_vec();
-        
+
         let mut mp4 = Mp4Writer::new(
             H264VideoParameters::new(
                 // For MP4, remove the start code (assumes a 4-byte start code).
@@ -286,7 +282,7 @@ impl<P> Mp4Camera<P> {
             AacAudioParameters::new(),
             file,
         )
-            .await?;
+        .await?;
 
         // Process the rest of the frames, writing both to the MP4 writer and to the raw file.
         Self::copy(&mut mp4, Some(duration), frame_queue).await?;
@@ -406,7 +402,7 @@ impl<P> Mp4Camera<P> {
             AacAudioParameters::new(),
             livestream_writer,
         )
-            .await?;
+        .await?;
         fmp4.finish_header(None).await?;
 
         Self::copy(&mut fmp4, None, frame_queue).await?;
@@ -487,7 +483,9 @@ impl<P> Camera for Mp4Camera<P> {
     fn is_there_motion(&mut self) -> Result<MotionResult, Error> {
         #[cfg(feature = "raspberry")]
         {
-            if let Some(pipeline_result) = self.motion_detection.lock().unwrap().motion_recently()? {
+            if let Some(pipeline_result) =
+                self.motion_detection.lock().unwrap().motion_recently()?
+            {
                 if pipeline_result.motion {
                     let frame = pipeline_result.thumbnail;
                     let data = frame.rgb_data.unwrap().to_vec();
@@ -542,7 +540,7 @@ impl<P> Camera for Mp4Camera<P> {
             Arc::clone(&self.frame_queue),
             self.sps_frame.clone(),
             self.pps_frame.clone(),
-            self.resolution.clone()
+            self.resolution.clone(),
         );
 
         rt.block_on(future).unwrap();
@@ -568,7 +566,7 @@ impl<P> Camera for Mp4Camera<P> {
                 frame_queue_clone,
                 sps_frame_clone,
                 pps_frame_clone,
-                resolution_clone
+                resolution_clone,
             );
             if let Err(e) = rt.block_on(future) {
                 eprintln!("[Livestream] write_fmp4 error: {e:?}");
@@ -603,7 +601,11 @@ struct H264VideoParameters {
 
 impl H264VideoParameters {
     fn new(sps: Vec<u8>, pps: Vec<u8>, dimensions: CameraResolution) -> Self {
-        Self { sps, pps, dimensions }
+        Self {
+            sps,
+            pps,
+            dimensions,
+        }
     }
 }
 
@@ -691,7 +693,10 @@ impl CodecParameters for H264VideoParameters {
     }
 
     fn get_dimensions(&self) -> (u32, u32) {
-        ((self.dimensions.width as u32) << 16, (self.dimensions.height as u32) << 16)
+        (
+            (self.dimensions.width as u32) << 16,
+            (self.dimensions.height as u32) << 16,
+        )
     }
 }
 

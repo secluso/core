@@ -1,8 +1,8 @@
+use secluso_client_lib::pairing::get_random_name;
+use secluso_client_server_lib::auth::parse_user_credentials_full;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use secluso_client_server_lib::auth::parse_user_credentials_full;
-use secluso_client_lib::pairing::get_random_name;
 
 /// Returns username, password, and server addr
 pub fn read_parse_full_credentials() -> (String, String, String) {
@@ -48,13 +48,11 @@ pub fn get_names(
         (cname, gname)
     } else {
         let file = File::open(camera_path).expect("Cannot open file to send");
-        let mut reader =
-            BufReader::with_capacity(usize::try_from(file.metadata()?.len())?, file);
+        let mut reader = BufReader::with_capacity(usize::try_from(file.metadata()?.len())?, file);
         let cname = reader.fill_buf()?;
 
         let file = File::open(group_path).expect("Cannot open file to send");
-        let mut reader =
-            BufReader::with_capacity(usize::try_from(file.metadata()?.len())?, file);
+        let mut reader = BufReader::with_capacity(usize::try_from(file.metadata()?.len())?, file);
         let gname = reader.fill_buf()?;
 
         (

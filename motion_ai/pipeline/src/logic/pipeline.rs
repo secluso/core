@@ -218,7 +218,11 @@ pub struct PipelineResult {
 /// and reacting to state transitions.
 impl PipelineController {
     /// Constructs and initializes the pipeline controller and FSM registries.
-    pub fn new(pipeline: Pipeline, write_logs: bool, save_all: bool) -> Result<Self, anyhow::Error> {
+    pub fn new(
+        pipeline: Pipeline,
+        write_logs: bool,
+        save_all: bool,
+    ) -> Result<Self, anyhow::Error> {
         let mut activity_registry: FsmRegistry<ActivityState> = FsmRegistry {
             handlers: HashMap::new(),
         };

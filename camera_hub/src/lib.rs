@@ -30,8 +30,8 @@ cfg_if! {
 
 #[cfg(feature = "android")]
 pub use crate::android::android_dual_stream::{
-    AndroidCameraFrameRateRange, AndroidCameraResolution, AndroidCameraSettings,
-    AndroidCameraSpec, ANDROID_CAMERA_FACING_BACK, ANDROID_CAMERA_FACING_FRONT,
+    AndroidCameraFrameRateRange, AndroidCameraResolution, AndroidCameraSettings, AndroidCameraSpec,
+    ANDROID_CAMERA_FACING_BACK, ANDROID_CAMERA_FACING_FRONT,
 };
 
 #[cfg(feature = "android")]

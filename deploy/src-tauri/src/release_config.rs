@@ -1,9 +1,9 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::{Context, Result};
-use semver::Version;
 use secluso_update::{
     build_github_client, default_signers, fetch_latest_release, Signer, DEFAULT_OWNER_REPO,
 };
+use semver::Version;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -92,8 +92,8 @@ fn format_version(version: &Version) -> String {
 }
 
 fn check_deploy_version_status() -> Result<DeployVersionStatus> {
-    let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
-        .context("parsing bundled deploy app version")?;
+    let current_version =
+        Version::parse(env!("CARGO_PKG_VERSION")).context("parsing bundled deploy app version")?;
     let client = build_github_client(10, None, "secluso-deploy")?;
     let release = fetch_latest_release(&client, DEFAULT_OWNER_REPO)
         .with_context(|| format!("fetching latest release metadata for {DEFAULT_OWNER_REPO}"))?;

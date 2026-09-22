@@ -7,8 +7,8 @@ use secluso_client_lib::mls_clients::MlsClients;
 use secluso_client_lib::pairing::{self, MessageTransport};
 use std::io::ErrorKind;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 use std::thread::sleep;
+use std::time::Duration;
 use std::{fs, io};
 
 #[cfg(feature = "ip")]
@@ -70,7 +70,6 @@ pub fn pair_all(
         {
             info!("[{}] File camera_{}_secret_qrcode.png was just created. Use the QR code in the app to pair.", camera.get_name(), camera.get_name().replace(' ', "_").to_lowercase());
             generate_android_camera_secret(&camera.get_name())?
-            
         }
     };
 
@@ -79,11 +78,7 @@ pub fn pair_all(
     #[cfg(feature = "android")]
     let mut msg_transport = {
         let (server_username, server_password, server_addr) = get_server_credentials();
-        RelayTransport::initialize_no_connect(
-            server_username,
-            server_password,
-            server_addr
-        )?
+        RelayTransport::initialize_no_connect(server_username, server_password, server_addr)?
     };
 
     // Loop and continuously try to pair with the app (in case of failures)
@@ -130,8 +125,7 @@ fn try_pairing(
     msg_transport: &mut dyn MessageTransport,
     mls_clients: &mut MlsClients,
     secret: &[u8],
-    #[cfg(feature = "raspberry")]
-    camera: &dyn Camera,
+    #[cfg(feature = "raspberry")] camera: &dyn Camera,
 ) -> bool {
     // Receive timestamp and set system date and time.
     // This is because an RPi doesn't have a battery-backed real-time clock.
@@ -154,7 +148,12 @@ fn try_pairing(
     for mls_client in mls_clients.iter_mut() {
         match perform_pairing_handshake(msg_transport, mls_client.key_package()) {
             Ok(app_key_package) => {
-                if let Err(e) = invite(msg_transport, mls_client, app_key_package, secret.to_owned()) {
+                if let Err(e) = invite(
+                    msg_transport,
+                    mls_client,
+                    app_key_package,
+                    secret.to_owned(),
+                ) {
                     debug!("[Pairing] Failed to create group: {e}");
                     return false;
                 }
@@ -180,8 +179,7 @@ fn try_pairing(
     #[cfg(feature = "raspberry")]
     {
         debug!("[Pairing] Before parsing credentials");
-        let (server_username, server_password, server_addr) =
-            read_parse_full_credentials();
+        let (server_username, server_password, server_addr) = read_parse_full_credentials();
         let http_client = HttpClient::new(server_addr.clone(), server_username, server_password);
 
         let (changed_wifi, success) = wifi::attempt_wifi_pair(
@@ -202,9 +200,7 @@ fn try_pairing(
     true
 }
 
-fn send_firmware_version(
-    msg_transport: &mut dyn MessageTransport
-) -> io::Result<()> {
+fn send_firmware_version(msg_transport: &mut dyn MessageTransport) -> io::Result<()> {
     let msg = serde_json::to_vec(&camera_version_info()?)
         .map_err(|e| io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
     msg_transport.send_msg(&msg, "firmware_version")?;

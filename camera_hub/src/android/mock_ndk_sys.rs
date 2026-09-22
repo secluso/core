@@ -106,9 +106,8 @@ impl ACameraMetadata {
             facing: [acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_BACK.0 as u8],
             stream_configurations: vec![
                 // format, width, height, input/output for encoded stream
-                0x22, 1280, 720, 0,
-                // format, width, height, input/output for raw frames
-                0x23, 640, 480, 0
+                0x22, 1280, 720, 0, // format, width, height, input/output for raw frames
+                0x23, 640, 480, 0,
             ],
             frame_rates: vec![10, 10, 15, 30],
         }
@@ -125,11 +124,21 @@ pub struct ACameraIdList {
 }
 
 #[derive(Default)]
-pub struct ACameraDevice { _private: u8 }
-pub struct ACaptureRequest { _private: u8 }
-pub struct ACaptureSessionOutputContainer { _private: u8 }
-pub struct ACaptureSessionOutput { _private: u8 }
-pub struct ACameraOutputTarget { _private: u8 }
+pub struct ACameraDevice {
+    _private: u8,
+}
+pub struct ACaptureRequest {
+    _private: u8,
+}
+pub struct ACaptureSessionOutputContainer {
+    _private: u8,
+}
+pub struct ACaptureSessionOutput {
+    _private: u8,
+}
+pub struct ACameraOutputTarget {
+    _private: u8,
+}
 
 pub type ACameraCaptureSession_closed =
     Option<unsafe extern "C" fn(*mut c_void, *mut ACameraCaptureSession)>;
@@ -151,10 +160,8 @@ pub struct ACameraCaptureSession {
     callbacks: ACameraCaptureSession_stateCallbacks,
 }
 
-pub type ACameraDevice_disconnected =
-    Option<unsafe extern "C" fn(*mut c_void, *mut ACameraDevice)>;
-pub type ACameraDevice_error =
-    Option<unsafe extern "C" fn(*mut c_void, *mut ACameraDevice, i32)>;
+pub type ACameraDevice_disconnected = Option<unsafe extern "C" fn(*mut c_void, *mut ACameraDevice)>;
+pub type ACameraDevice_error = Option<unsafe extern "C" fn(*mut c_void, *mut ACameraDevice, i32)>;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -169,7 +176,9 @@ pub struct ACameraDevice_StateCallbacks {
 pub struct ACameraDevice_request_template(pub i32);
 
 #[derive(Default)]
-pub struct ANativeWindow { _private: u8 }
+pub struct ANativeWindow {
+    _private: u8,
+}
 
 pub struct AImageReader {
     width: i32,
@@ -184,8 +193,7 @@ pub struct AImage {
     pixel_strides: [i32; 3],
 }
 
-pub type AImageReader_ImageCallback =
-    Option<unsafe extern "C" fn(*mut c_void, *mut AImageReader)>;
+pub type AImageReader_ImageCallback = Option<unsafe extern "C" fn(*mut c_void, *mut AImageReader)>;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -216,7 +224,9 @@ pub struct AMediaCodecBufferInfo {
 }
 
 #[derive(Default)]
-pub struct AAudioStreamBuilder { _private: u8 }
+pub struct AAudioStreamBuilder {
+    _private: u8,
+}
 pub struct AAudioStream {
     reads: usize,
 }
@@ -283,7 +293,8 @@ pub unsafe fn ACameraMetadata_getConstEntry(
     tag: u32,
     out: *mut ACameraMetadata_const_entry,
 ) -> camera_status_t {
-    let (Some(metadata), Some(out)) = (unsafe { metadata.as_ref() }, unsafe { out.as_mut() }) else {
+    let (Some(metadata), Some(out)) = (unsafe { metadata.as_ref() }, unsafe { out.as_mut() })
+    else {
         return camera_status_t(-1);
     };
 
@@ -291,7 +302,9 @@ pub unsafe fn ACameraMetadata_getConstEntry(
         (
             0,
             metadata.facing.len() as u32,
-            ACameraMetadata_const_entry__bindgen_ty_1 { u8_: metadata.facing.as_ptr() },
+            ACameraMetadata_const_entry__bindgen_ty_1 {
+                u8_: metadata.facing.as_ptr(),
+            },
         )
     } else if tag == acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS.0 {
         (
@@ -305,13 +318,20 @@ pub unsafe fn ACameraMetadata_getConstEntry(
         (
             1,
             metadata.frame_rates.len() as u32,
-            ACameraMetadata_const_entry__bindgen_ty_1 { i32_: metadata.frame_rates.as_ptr() },
+            ACameraMetadata_const_entry__bindgen_ty_1 {
+                i32_: metadata.frame_rates.as_ptr(),
+            },
         )
     } else {
         return camera_status_t(-1);
     };
 
-    *out = ACameraMetadata_const_entry { tag, type_, count, data };
+    *out = ACameraMetadata_const_entry {
+        tag,
+        type_,
+        count,
+        data,
+    };
     CAMERA_OK
 }
 
@@ -348,7 +368,9 @@ macro_rules! simple_handle_create {
 macro_rules! simple_handle {
     ($name:ident) => {
         impl Default for $name {
-            fn default() -> Self { Self { _private: 0 } }
+            fn default() -> Self {
+                Self { _private: 0 }
+            }
         }
     };
 }
@@ -358,7 +380,12 @@ simple_handle!(ACaptureSessionOutputContainer);
 simple_handle!(ACaptureSessionOutput);
 simple_handle!(ACameraOutputTarget);
 
-simple_handle_create!(ACaptureSessionOutputContainer_create, ACaptureSessionOutputContainer, (), out);
+simple_handle_create!(
+    ACaptureSessionOutputContainer_create,
+    ACaptureSessionOutputContainer,
+    (),
+    out
+);
 simple_handle_create!(ACaptureSessionOutput_create, ACaptureSessionOutput, (_window: *mut ANativeWindow), out);
 simple_handle_create!(ACameraOutputTarget_create, ACameraOutputTarget, (_window: *mut ANativeWindow), out);
 
@@ -374,7 +401,9 @@ pub unsafe fn ACameraDevice_createCaptureRequest(
     _template: ACameraDevice_request_template,
     out: *mut *mut ACaptureRequest,
 ) -> camera_status_t {
-    if out.is_null() { return camera_status_t(-1); }
+    if out.is_null() {
+        return camera_status_t(-1);
+    }
     unsafe { out.write(boxed(ACaptureRequest::default())) };
     CAMERA_OK
 }
@@ -401,8 +430,12 @@ pub unsafe fn ACameraDevice_createCaptureSession(
     callbacks: *const ACameraCaptureSession_stateCallbacks,
     out: *mut *mut ACameraCaptureSession,
 ) -> camera_status_t {
-    if callbacks.is_null() || out.is_null() { return camera_status_t(-1); }
-    let session = ACameraCaptureSession { callbacks: unsafe { *callbacks } };
+    if callbacks.is_null() || out.is_null() {
+        return camera_status_t(-1);
+    }
+    let session = ACameraCaptureSession {
+        callbacks: unsafe { *callbacks },
+    };
     unsafe { out.write(boxed(session)) };
     CAMERA_OK
 }
@@ -419,11 +452,15 @@ pub unsafe fn ACameraCaptureSession_setRepeatingRequest(
 
 pub unsafe fn ACameraCaptureSession_stopRepeating(
     _session: *mut ACameraCaptureSession,
-) -> camera_status_t { CAMERA_OK }
+) -> camera_status_t {
+    CAMERA_OK
+}
 
 pub unsafe fn ACameraCaptureSession_abortCaptures(
     _session: *mut ACameraCaptureSession,
-) -> camera_status_t { CAMERA_OK }
+) -> camera_status_t {
+    CAMERA_OK
+}
 
 pub unsafe fn ACameraCaptureSession_close(session: *mut ACameraCaptureSession) {
     if let Some(session_ref) = unsafe { session.as_ref() } {
@@ -443,7 +480,10 @@ macro_rules! camera_delete {
 }
 
 camera_delete!(ACaptureRequest_free, ACaptureRequest);
-camera_delete!(ACaptureSessionOutputContainer_free, ACaptureSessionOutputContainer);
+camera_delete!(
+    ACaptureSessionOutputContainer_free,
+    ACaptureSessionOutputContainer
+);
 camera_delete!(ACaptureSessionOutput_free, ACaptureSessionOutput);
 camera_delete!(ACameraOutputTarget_free, ACameraOutputTarget);
 
@@ -454,7 +494,9 @@ pub unsafe fn AImageReader_new(
     _max_images: i32,
     out: *mut *mut AImageReader,
 ) -> media_status_t {
-    if width <= 0 || height <= 0 || out.is_null() { return media_status_t(-1); }
+    if width <= 0 || height <= 0 || out.is_null() {
+        return media_status_t(-1);
+    }
     let reader = AImageReader {
         width,
         height,
@@ -469,7 +511,9 @@ pub unsafe fn AImageReader_setImageListener(
     reader: *mut AImageReader,
     listener: *mut AImageReader_ImageListener,
 ) -> media_status_t {
-    let Some(reader) = (unsafe { reader.as_mut() }) else { return media_status_t(-1); };
+    let Some(reader) = (unsafe { reader.as_mut() }) else {
+        return media_status_t(-1);
+    };
     reader.listener = unsafe { listener.as_ref().copied() };
     MEDIA_OK
 }
@@ -496,7 +540,10 @@ pub unsafe fn AImageReader_acquireLatestImage(
     let (Some(reader), Some(out)) = (unsafe { reader.as_ref() }, unsafe { out.as_mut() }) else {
         return media_status_t(-1);
     };
-    let (Ok(width), Ok(height)) = (usize::try_from(reader.width), usize::try_from(reader.height)) else {
+    let (Ok(width), Ok(height)) = (
+        usize::try_from(reader.width),
+        usize::try_from(reader.height),
+    ) else {
         return media_status_t(-1);
     };
     let (uv_width, uv_height) = (width / 2, height / 2);
@@ -524,9 +571,16 @@ pub unsafe fn AImage_getPlaneData(
     len: *mut i32,
 ) -> media_status_t {
     let (Some(image), Ok(index), Some(data), Some(len)) = (
-        unsafe { image.as_ref() }, usize::try_from(plane), unsafe { data.as_mut() }, unsafe { len.as_mut() },
-    ) else { return media_status_t(-1); };
-    let Some(buffer) = image.planes.get(index) else { return media_status_t(-1); };
+        unsafe { image.as_ref() },
+        usize::try_from(plane),
+        unsafe { data.as_mut() },
+        unsafe { len.as_mut() },
+    ) else {
+        return media_status_t(-1);
+    };
+    let Some(buffer) = image.planes.get(index) else {
+        return media_status_t(-1);
+    };
     *data = buffer.as_ptr().cast_mut();
     *len = buffer.len() as i32;
     MEDIA_OK
@@ -538,9 +592,15 @@ pub unsafe fn AImage_getPlaneRowStride(
     out: *mut i32,
 ) -> media_status_t {
     let (Some(image), Ok(index), Some(out)) =
-        (unsafe { image.as_ref() }, usize::try_from(plane), unsafe { out.as_mut() })
-    else { return media_status_t(-1); };
-    let Some(value) = image.row_strides.get(index) else { return media_status_t(-1); };
+        (unsafe { image.as_ref() }, usize::try_from(plane), unsafe {
+            out.as_mut()
+        })
+    else {
+        return media_status_t(-1);
+    };
+    let Some(value) = image.row_strides.get(index) else {
+        return media_status_t(-1);
+    };
     *out = *value;
     MEDIA_OK
 }
@@ -551,15 +611,25 @@ pub unsafe fn AImage_getPlanePixelStride(
     out: *mut i32,
 ) -> media_status_t {
     let (Some(image), Ok(index), Some(out)) =
-        (unsafe { image.as_ref() }, usize::try_from(plane), unsafe { out.as_mut() })
-    else { return media_status_t(-1); };
-    let Some(value) = image.pixel_strides.get(index) else { return media_status_t(-1); };
+        (unsafe { image.as_ref() }, usize::try_from(plane), unsafe {
+            out.as_mut()
+        })
+    else {
+        return media_status_t(-1);
+    };
+    let Some(value) = image.pixel_strides.get(index) else {
+        return media_status_t(-1);
+    };
     *out = *value;
     MEDIA_OK
 }
 
 pub unsafe fn AMediaFormat_new() -> *mut AMediaFormat {
-    unsafe { boxed(AMediaFormat { codec_specific_data: Vec::new() }) }
+    unsafe {
+        boxed(AMediaFormat {
+            codec_specific_data: Vec::new(),
+        })
+    }
 }
 
 pub unsafe fn AMediaFormat_delete(format: *mut AMediaFormat) -> media_status_t {
@@ -571,13 +641,11 @@ pub unsafe fn AMediaFormat_setString(
     _format: *mut AMediaFormat,
     _name: *const c_char,
     _value: *const c_char,
-) {}
+) {
+}
 
-pub unsafe fn AMediaFormat_setInt32(
-    _format: *mut AMediaFormat,
-    _name: *const c_char,
-    _value: i32,
-) {}
+pub unsafe fn AMediaFormat_setInt32(_format: *mut AMediaFormat, _name: *const c_char, _value: i32) {
+}
 
 pub unsafe fn AMediaFormat_getBuffer(
     format: *mut AMediaFormat,
@@ -585,17 +653,25 @@ pub unsafe fn AMediaFormat_getBuffer(
     data: *mut *mut c_void,
     size: *mut usize,
 ) -> bool {
-    let (Some(format), Some(data), Some(size)) =
-        (unsafe { format.as_mut() }, unsafe { data.as_mut() }, unsafe { size.as_mut() })
-    else { return false; };
-    if format.codec_specific_data.is_empty() { return false; }
+    let (Some(format), Some(data), Some(size)) = (
+        unsafe { format.as_mut() },
+        unsafe { data.as_mut() },
+        unsafe { size.as_mut() },
+    ) else {
+        return false;
+    };
+    if format.codec_specific_data.is_empty() {
+        return false;
+    }
     *data = format.codec_specific_data.as_mut_ptr().cast();
     *size = format.codec_specific_data.len();
     true
 }
 
 pub unsafe fn miri_set_format_buffer(format: *mut AMediaFormat, data: &[u8]) -> bool {
-    let Some(format) = (unsafe { format.as_mut() }) else { return false; };
+    let Some(format) = (unsafe { format.as_mut() }) else {
+        return false;
+    };
     format.codec_specific_data.clear();
     format.codec_specific_data.extend_from_slice(data);
     true
@@ -613,7 +689,9 @@ pub unsafe fn AMediaCodec_createEncoderByType(_mime: *const c_char) -> *mut AMed
 }
 
 pub unsafe fn miri_set_codec_output(codec: *mut AMediaCodec, data: &[u8], flags: u32) -> bool {
-    let Some(codec) = (unsafe { codec.as_mut() }) else { return false; };
+    let Some(codec) = (unsafe { codec.as_mut() }) else {
+        return false;
+    };
     codec.output.clear();
     codec.output.extend_from_slice(data);
     codec.output_flags = flags;
@@ -632,16 +710,24 @@ pub unsafe fn AMediaCodec_configure(
     _surface: *mut ANativeWindow,
     _crypto: *mut AMediaCrypto,
     _flags: u32,
-) -> media_status_t { MEDIA_OK }
+) -> media_status_t {
+    MEDIA_OK
+}
 
-pub unsafe fn AMediaCodec_start(_codec: *mut AMediaCodec) -> media_status_t { MEDIA_OK }
-pub unsafe fn AMediaCodec_stop(_codec: *mut AMediaCodec) -> media_status_t { MEDIA_OK }
+pub unsafe fn AMediaCodec_start(_codec: *mut AMediaCodec) -> media_status_t {
+    MEDIA_OK
+}
+pub unsafe fn AMediaCodec_stop(_codec: *mut AMediaCodec) -> media_status_t {
+    MEDIA_OK
+}
 
 pub unsafe fn AMediaCodec_createInputSurface(
     _codec: *mut AMediaCodec,
     out: *mut *mut ANativeWindow,
 ) -> media_status_t {
-    if out.is_null() { return media_status_t(-1); }
+    if out.is_null() {
+        return media_status_t(-1);
+    }
     unsafe { out.write(boxed(ANativeWindow::default())) };
     MEDIA_OK
 }
@@ -650,10 +736,9 @@ pub unsafe fn ANativeWindow_release(window: *mut ANativeWindow) {
     unsafe { delete_boxed(window) };
 }
 
-pub unsafe fn AMediaCodec_dequeueInputBuffer(
-    _codec: *mut AMediaCodec,
-    _timeout_us: i64,
-) -> isize { 0 }
+pub unsafe fn AMediaCodec_dequeueInputBuffer(_codec: *mut AMediaCodec, _timeout_us: i64) -> isize {
+    0
+}
 
 pub unsafe fn AMediaCodec_getInputBuffer(
     codec: *mut AMediaCodec,
@@ -674,7 +759,9 @@ pub unsafe fn AMediaCodec_queueInputBuffer(
     _size: usize,
     _time: u64,
     _flags: u32,
-) -> media_status_t { MEDIA_OK }
+) -> media_status_t {
+    MEDIA_OK
+}
 
 pub unsafe fn AMediaCodec_dequeueOutputBuffer(
     codec: *mut AMediaCodec,
@@ -725,23 +812,32 @@ pub unsafe fn AMediaCodec_getOutputFormat(_codec: *mut AMediaCodec) -> *mut AMed
 }
 
 pub unsafe fn AAudio_createStreamBuilder(out: *mut *mut AAudioStreamBuilder) -> i32 {
-    if out.is_null() { return -1; }
+    if out.is_null() {
+        return -1;
+    }
     unsafe { out.write(boxed(AAudioStreamBuilder::default())) };
     AAUDIO_OK
 }
 
 pub unsafe fn AAudioStreamBuilder_setDirection(_builder: *mut AAudioStreamBuilder, _value: i32) {}
 pub unsafe fn AAudioStreamBuilder_setSampleRate(_builder: *mut AAudioStreamBuilder, _value: i32) {}
-pub unsafe fn AAudioStreamBuilder_setChannelCount(_builder: *mut AAudioStreamBuilder, _value: i32) {}
+pub unsafe fn AAudioStreamBuilder_setChannelCount(_builder: *mut AAudioStreamBuilder, _value: i32) {
+}
 pub unsafe fn AAudioStreamBuilder_setFormat(_builder: *mut AAudioStreamBuilder, _value: i32) {}
-pub unsafe fn AAudioStreamBuilder_setPerformanceMode(_builder: *mut AAudioStreamBuilder, _value: i32) {}
+pub unsafe fn AAudioStreamBuilder_setPerformanceMode(
+    _builder: *mut AAudioStreamBuilder,
+    _value: i32,
+) {
+}
 pub unsafe fn AAudioStreamBuilder_setSharingMode(_builder: *mut AAudioStreamBuilder, _value: i32) {}
 
 pub unsafe fn AAudioStreamBuilder_openStream(
     _builder: *mut AAudioStreamBuilder,
     out: *mut *mut AAudioStream,
 ) -> i32 {
-    if out.is_null() { return -1; }
+    if out.is_null() {
+        return -1;
+    }
     unsafe { out.write(boxed(AAudioStream { reads: 0 })) };
     AAUDIO_OK
 }
@@ -751,8 +847,12 @@ pub unsafe fn AAudioStreamBuilder_delete(builder: *mut AAudioStreamBuilder) -> i
     AAUDIO_OK
 }
 
-pub unsafe fn AAudioStream_requestStart(_stream: *mut AAudioStream) -> i32 { AAUDIO_OK }
-pub unsafe fn AAudioStream_requestStop(_stream: *mut AAudioStream) -> i32 { AAUDIO_OK }
+pub unsafe fn AAudioStream_requestStart(_stream: *mut AAudioStream) -> i32 {
+    AAUDIO_OK
+}
+pub unsafe fn AAudioStream_requestStop(_stream: *mut AAudioStream) -> i32 {
+    AAUDIO_OK
+}
 
 pub unsafe fn AAudioStream_read(
     stream: *mut AAudioStream,
@@ -760,8 +860,12 @@ pub unsafe fn AAudioStream_read(
     frames: i32,
     _timeout_ns: i64,
 ) -> i32 {
-    let Some(stream) = (unsafe { stream.as_mut() }) else { return -1; };
-    if buffer.is_null() || frames < 0 { return -1; }
+    let Some(stream) = (unsafe { stream.as_mut() }) else {
+        return -1;
+    };
+    if buffer.is_null() || frames < 0 {
+        return -1;
+    }
     if stream.reads > 0 {
         return AAUDIO_ERROR_DISCONNECTED;
     }

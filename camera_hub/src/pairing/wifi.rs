@@ -3,8 +3,8 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::notification_target::persist_notification_target;
-use crate::traits::Camera;
 use crate::pairing::flow::decrypt_msg;
+use crate::traits::Camera;
 use secluso_client_lib::http_client::{HttpClient, PairingStatus};
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
@@ -227,9 +227,7 @@ fn wait_for_wifi_readiness(ssid: &str, server_addr: &str, timeout: Duration) -> 
         // what layer is lagging: wrong active connection, no device yet, no DHCP yet, no route yet, or no relay reachability yet...
         let active_names = active_connection_names()?;
         if !active_names.iter().any(|name| name == ssid) {
-            last_reason = format!(
-                "active connections are {active_names:?}, expected {ssid}",
-            );
+            last_reason = format!("active connections are {active_names:?}, expected {ssid}",);
             thread::sleep(Duration::from_millis(500));
             continue;
         }
@@ -372,14 +370,7 @@ pub(crate) fn attempt_wifi_connection(
 
         // Use direct nmcli args instead of shell strings so we are not depending on quoting luck
         let connect_output = Command::new("nmcli")
-            .args([
-                "device",
-                "wifi",
-                "connect",
-                ssid,
-                "password",
-                password,
-            ])
+            .args(["device", "wifi", "connect", ssid, "password", password])
             .output()?;
 
         if connect_output.status.success() {

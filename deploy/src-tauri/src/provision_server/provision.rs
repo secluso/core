@@ -270,8 +270,7 @@ pub fn run_provision(
                 run_id,
                 "info",
                 Some("secrets"),
-                "No service account key provided; deploying without FCM support."
-                    .to_string(),
+                "No service account key provided; deploying without FCM support.".to_string(),
             );
         }
 
@@ -431,24 +430,24 @@ pub fn run_provision(
         step_ok(app, run_id, "remote");
 
         step_start(app, run_id, "health", "Checking public server health");
-            if let Some(uc) = generated_user_credentials.as_ref() {
-                let probe_version = plan
-                    .manifest_version_override
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or(&artifacts.server_manifest_version);
-                verify_public_server_health(app, run_id, &plan, secrets, probe_version, uc)?;
-            } else {
-                log_line(
-                    app,
-                    run_id,
-                    "warn",
-                    Some("health"),
-                    "Skipping public health check because generated credentials are unavailable."
-                        .to_string(),
-                );
-            }
+        if let Some(uc) = generated_user_credentials.as_ref() {
+            let probe_version = plan
+                .manifest_version_override
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&artifacts.server_manifest_version);
+            verify_public_server_health(app, run_id, &plan, secrets, probe_version, uc)?;
+        } else {
+            log_line(
+                app,
+                run_id,
+                "warn",
+                Some("health"),
+                "Skipping public health check because generated credentials are unavailable."
+                    .to_string(),
+            );
+        }
         step_ok(app, run_id, "health");
         Ok(())
     })();

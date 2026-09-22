@@ -5,24 +5,26 @@
 use anyhow::anyhow;
 use anyhow::Context;
 use log::{debug, error, info};
+use openmls::prelude::KeyPackage;
 use secluso_client_lib::config::{
-    CameraVersionInfo, Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST,
-    OPCODE_HEARTBEAT_RESPONSE, AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated,
-    OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE, OPCODE_ADD_APP_INFO, OPCODE_REMOVE_APP_REQUEST,
-    OPCODE_REMOVE_APP_RESPONSE, OPCODE_REMOVE_APP_INFO,
+    AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated, CameraVersionInfo, Heartbeat,
+    HeartbeatRequest, HeartbeatResult, OPCODE_ADD_APP_INFO, OPCODE_ADD_APP_REQUEST,
+    OPCODE_ADD_APP_RESPONSE, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE,
+    OPCODE_REMOVE_APP_INFO, OPCODE_REMOVE_APP_REQUEST, OPCODE_REMOVE_APP_RESPONSE,
 };
-use secluso_client_lib::mls_client::{Contact, MlsClient, ClientType};
+use secluso_client_lib::mls_client::{ClientType, Contact, MlsClient};
 use secluso_client_lib::mls_clients::MlsClients;
 use secluso_client_lib::mls_clients::{
-    CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
-    NUM_COMMON_MLS_CLIENTS, NUM_DEDICATED_MLS_CLIENTS,
+    CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_COMMON_MLS_CLIENTS,
+    NUM_DEDICATED_MLS_CLIENTS, NUM_MLS_CLIENTS, THUMBNAIL,
 };
 use secluso_client_lib::notification::{decode_notification, Notification};
-use secluso_client_lib::pairing::{self, generate_add_app_secret, MessageTransport,
-    TcpStreamTransport, RelayTransport, get_random_name};
-use secluso_client_lib::video::{encrypt_video_file, decrypt_video_file, decrypt_thumbnail_file};
+use secluso_client_lib::pairing::{
+    self, generate_add_app_secret, get_random_name, MessageTransport, RelayTransport,
+    TcpStreamTransport,
+};
+use secluso_client_lib::video::{decrypt_thumbnail_file, decrypt_video_file, encrypt_video_file};
 use secluso_client_server_lib::auth::parse_user_credentials_full;
-use openmls::prelude::KeyPackage;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::array;
@@ -61,7 +63,7 @@ impl Clients {
                 MLS_CLIENT_TAGS[i].to_string(),
                 ClientType::App,
             )
-                .expect("MlsClient::new() for returned error.");
+            .expect("MlsClient::new() for returned error.");
 
             // Make sure the groups_state files are created in case we initialize again soon.
             mls_client.save_group_state().unwrap();
@@ -170,10 +172,11 @@ fn receive_camera_version_info(
     Ok(version_info)
 }
 
-fn send_timestamp(
-    msg_transport: &mut dyn MessageTransport,
-) -> anyhow::Result<()> {
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+fn send_timestamp(msg_transport: &mut dyn MessageTransport) -> anyhow::Result<()> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let timestamp_vec = bincode::serialize(&timestamp).unwrap();
     msg_transport.send_msg(&timestamp_vec, "")?;
 
@@ -285,12 +288,8 @@ pub fn add_camera(
                 }
             };
 
-        RelayTransport::initialize_connect(
-            server_username,
-            server_password,
-            server_addr,
-        )
-        .map(|transport| Box::new(transport) as Box<dyn MessageTransport>)
+        RelayTransport::initialize_connect(server_username, server_password, server_addr)
+            .map(|transport| Box::new(transport) as Box<dyn MessageTransport>)
     } else {
         TcpStreamTransport::initialize_connect(camera_ip)
             .map(|transport| Box::new(transport) as Box<dyn MessageTransport>)
@@ -307,23 +306,20 @@ pub fn add_camera(
     if standalone_camera {
         // Need to send timestamp. RPi needs it for setting date/time.
         info!("Sending timestamp to camera");
-        if let Err(e) = send_timestamp(
-            msg_transport.as_mut(),
-        ) {
+        if let Err(e) = send_timestamp(msg_transport.as_mut()) {
             info!("Error (sending timestamp): {e}");
             return "Error".to_string();
         }
     }
 
     info!("Waiting for firmware version from camera");
-    let version_info =
-        match receive_camera_version_info(msg_transport.as_mut()) {
-            Ok(version_info) => version_info,
-            Err(e) => {
-                info!("Error (firmware): {e}");
-                return "Error".to_string();
-            }
-        };
+    let version_info = match receive_camera_version_info(msg_transport.as_mut()) {
+        Ok(version_info) => version_info,
+        Err(e) => {
+            info!("Error (firmware): {e}");
+            return "Error".to_string();
+        }
+    };
 
     let app_native_version = format!("v{}", env!("CARGO_PKG_VERSION"));
     info!(
@@ -410,10 +406,7 @@ pub fn decrypt_video(
     let enc_pathname: String = format!("{}/encrypted/{}", file_dir, encrypted_filename);
     info!("Encrypted pathname: {}", enc_pathname);
 
-    decrypt_video_file(
-        &mut clients.mls_clients[MOTION],
-        &enc_pathname,
-    )
+    decrypt_video_file(&mut clients.mls_clients[MOTION], &enc_pathname)
 }
 
 // This function is used to aid in performance testing; this is not used in the production app
@@ -434,7 +427,7 @@ pub fn encrypt_video(
         &mut clients.mls_clients[MOTION],
         &video_pathname,
         &enc_pathname,
-        timestamp
+        timestamp,
     )
 }
 
@@ -480,7 +473,9 @@ pub fn decrypt_message(
 
     let dec_msg_bytes =
         clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].decrypt(message, true)?;
-    clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].save_group_state().unwrap();
+    clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()]
+        .save_group_state()
+        .unwrap();
 
     decode_message_content(&dec_msg_bytes)
 }
@@ -515,10 +510,7 @@ pub fn get_group_name(clients: &mut Option<Box<Clients>>, client_tag: &str) -> i
     clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].get_group_name()
 }
 
-pub fn get_client_epoch(
-    clients: &mut Option<Box<Clients>>,
-    client_tag: &str,
-) -> io::Result<u64> {
+pub fn get_client_epoch(clients: &mut Option<Box<Clients>>, client_tag: &str) -> io::Result<u64> {
     if clients.is_none() {
         return Err(io::Error::other(
             "Error: clients not initialized!".to_string(),
@@ -556,7 +548,9 @@ pub fn livestream_decrypt(
     }
 
     let dec_data = clients.as_mut().unwrap().mls_clients[LIVESTREAM].decrypt(enc_data, true)?;
-    clients.as_mut().unwrap().mls_clients[LIVESTREAM].save_group_state().unwrap();
+    clients.as_mut().unwrap().mls_clients[LIVESTREAM]
+        .save_group_state()
+        .unwrap();
 
     // check the chunk number
     if dec_data.len() < 8 {
@@ -597,7 +591,9 @@ pub fn livestream_update(
         let _ = clients.as_mut().unwrap().mls_clients[LIVESTREAM].decrypt(commit_msg, false)?;
     }
 
-    clients.as_mut().unwrap().mls_clients[LIVESTREAM].save_group_state().unwrap();
+    clients.as_mut().unwrap().mls_clients[LIVESTREAM]
+        .save_group_state()
+        .unwrap();
 
     Ok(())
 }
@@ -641,7 +637,9 @@ pub fn generate_heartbeat_request_config_command(
 
     let config_msg_enc = clients.as_mut().unwrap().mls_clients[CONFIG].encrypt(&config_msg)?;
 
-    clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+    clients.as_mut().unwrap().mls_clients[CONFIG]
+        .save_group_state()
+        .unwrap();
 
     Ok(config_msg_enc)
 }
@@ -659,7 +657,9 @@ pub fn process_heartbeat_config_response(
 
     match clients.as_mut().unwrap().mls_clients[CONFIG].decrypt(config_response, true) {
         Ok(command) => {
-            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+            clients.as_mut().unwrap().mls_clients[CONFIG]
+                .save_group_state()
+                .unwrap();
             match command[0] {
                 OPCODE_HEARTBEAT_RESPONSE => {
                     let heartbeat: Heartbeat =
@@ -684,59 +684,91 @@ pub fn process_heartbeat_config_response(
                             serde_json::to_string(&status)
                                 .map_err(|e| io::Error::other(e.to_string()))
                         }
-                        HeartbeatResult::InvalidTimestamp => Ok(serde_json::to_string(&HeartbeatStatus {
-                            status: "invalid timestamp".to_string(),
-                            version_info: None,
-                        }).unwrap()),
-                        HeartbeatResult::InvalidCiphertext => Ok(serde_json::to_string(&HeartbeatStatus {
-                            status: "invalid ciphertext".to_string(),
-                            version_info: None,
-                        }).unwrap()),
-                        HeartbeatResult::InvalidEpoch => Ok(serde_json::to_string(&HeartbeatStatus {
-                            status: "invalid epoch".to_string(),
-                            version_info: None,
-                        }).unwrap()),
+                        HeartbeatResult::InvalidTimestamp => {
+                            Ok(serde_json::to_string(&HeartbeatStatus {
+                                status: "invalid timestamp".to_string(),
+                                version_info: None,
+                            })
+                            .unwrap())
+                        }
+                        HeartbeatResult::InvalidCiphertext => {
+                            Ok(serde_json::to_string(&HeartbeatStatus {
+                                status: "invalid ciphertext".to_string(),
+                                version_info: None,
+                            })
+                            .unwrap())
+                        }
+                        HeartbeatResult::InvalidEpoch => {
+                            Ok(serde_json::to_string(&HeartbeatStatus {
+                                status: "invalid epoch".to_string(),
+                                version_info: None,
+                            })
+                            .unwrap())
+                        }
                     }
-                },
+                }
 
                 OPCODE_ADD_APP_INFO => {
-                    let (add_app_resps_com, secret):
-                        ([AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS], Vec<u8>) =
-                        bincode::deserialize(&command[1..]).map_err(|e| {
-                            io::Error::other(format!("Failed to deserialize add_app info msg - {e}"))
-                        })?;
+                    let (add_app_resps_com, secret): (
+                        [AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS],
+                        Vec<u8>,
+                    ) = bincode::deserialize(&command[1..]).map_err(|e| {
+                        io::Error::other(format!("Failed to deserialize add_app info msg - {e}"))
+                    })?;
 
                     for i in 0..add_app_resps_com.len() {
                         if i < NUM_COMMON_MLS_CLIENTS {
                             // Store update proposals, merge the psk_proposal, and commit for the add operation
-                            clients.as_mut().unwrap().mls_clients[i].store_update_proposals(add_app_resps_com[i].update_proposals_vec.clone()).unwrap();
-                            clients.as_mut().unwrap().mls_clients[i].decrypt(add_app_resps_com[i].psk_proposal_vec.clone(), false).unwrap();
-                            clients.as_mut().unwrap().mls_clients[i].decrypt_with_secret(add_app_resps_com[i].commit_msg_vec.clone(), false, secret.clone()).unwrap();
-                            clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
+                            clients.as_mut().unwrap().mls_clients[i]
+                                .store_update_proposals(
+                                    add_app_resps_com[i].update_proposals_vec.clone(),
+                                )
+                                .unwrap();
+                            clients.as_mut().unwrap().mls_clients[i]
+                                .decrypt(add_app_resps_com[i].psk_proposal_vec.clone(), false)
+                                .unwrap();
+                            clients.as_mut().unwrap().mls_clients[i]
+                                .decrypt_with_secret(
+                                    add_app_resps_com[i].commit_msg_vec.clone(),
+                                    false,
+                                    secret.clone(),
+                                )
+                                .unwrap();
+                            clients.as_mut().unwrap().mls_clients[i]
+                                .save_group_state()
+                                .unwrap();
                         }
                     }
 
                     return Ok("add_app".to_string());
                 }
                 OPCODE_REMOVE_APP_INFO => {
-                    let (remove_app_resps_com, removed_app_name):
-                        ([Vec<u8>; NUM_COMMON_MLS_CLIENTS], String) =
-                        bincode::deserialize(&command[1..]).map_err(|e| {
-                            io::Error::other(format!("Failed to deserialize remove_app info msg - {e}"))
-                        })?;
+                    let (remove_app_resps_com, removed_app_name): (
+                        [Vec<u8>; NUM_COMMON_MLS_CLIENTS],
+                        String,
+                    ) = bincode::deserialize(&command[1..]).map_err(|e| {
+                        io::Error::other(format!("Failed to deserialize remove_app info msg - {e}"))
+                    })?;
 
                     for i in 0..remove_app_resps_com.len() {
                         if i < NUM_COMMON_MLS_CLIENTS {
                             // Store update proposals, merge the psk_proposal, and commit for the add operation
-                            clients.as_mut().unwrap().mls_clients[i].decrypt(remove_app_resps_com[i].clone(), false).unwrap();
-                            clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
+                            clients.as_mut().unwrap().mls_clients[i]
+                                .decrypt(remove_app_resps_com[i].clone(), false)
+                                .unwrap();
+                            clients.as_mut().unwrap().mls_clients[i]
+                                .save_group_state()
+                                .unwrap();
                         }
                     }
 
                     return Ok(format!("remove_app{}", removed_app_name));
                 }
                 _ => {
-                    error!("Error: Unexpected config command response opcode! - {}", command[0]);
+                    error!(
+                        "Error: Unexpected config command response opcode! - {}",
+                        command[0]
+                    );
                     Err(io::Error::other(
                         "Error: Unexpected config response opcode!".to_string(),
                     ))
@@ -745,7 +777,9 @@ pub fn process_heartbeat_config_response(
         }
         Err(e) => {
             error!("Failed to decrypt command message: {e}");
-            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+            clients.as_mut().unwrap().mls_clients[CONFIG]
+                .save_group_state()
+                .unwrap();
             Err(io::Error::other(format!(
                 "Failed to decrypt command message: {e}"
             )))
@@ -754,9 +788,7 @@ pub fn process_heartbeat_config_response(
 }
 
 pub fn get_add_app_secret() -> io::Result<String> {
-    generate_add_app_secret()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-
+    generate_add_app_secret().map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
 pub fn get_key_packages(clients: &mut Option<Box<Clients>>) -> io::Result<Vec<u8>> {
@@ -769,7 +801,7 @@ pub fn get_key_packages(clients: &mut Option<Box<Clients>>) -> io::Result<Vec<u8
     let key_packages: [KeyPackage; NUM_MLS_CLIENTS] =
         std::array::from_fn(|i| clients.as_mut().unwrap().mls_clients[i].key_package());
 
-    let key_packages_vec = bincode::serialize(&key_packages).unwrap(); 
+    let key_packages_vec = bincode::serialize(&key_packages).unwrap();
 
     Ok(key_packages_vec)
 }
@@ -788,9 +820,10 @@ pub fn generate_add_app_request_config_command(
     let new_app_key_packages: [KeyPackage; NUM_MLS_CLIENTS] =
         bincode::deserialize(&new_app_key_packages_vec).unwrap();
 
-    let add_app_requests: [AddAppRequest; NUM_MLS_CLIENTS] = std::array::from_fn(|i| AddAppRequest {
-        new_app_key_package: new_app_key_packages[i].clone(),
-    });
+    let add_app_requests: [AddAppRequest; NUM_MLS_CLIENTS] =
+        std::array::from_fn(|i| AddAppRequest {
+            new_app_key_package: new_app_key_packages[i].clone(),
+        });
 
     let add_app_msg = (add_app_requests, secret);
 
@@ -799,7 +832,9 @@ pub fn generate_add_app_request_config_command(
 
     let config_msg_enc = clients.as_mut().unwrap().mls_clients[CONFIG].encrypt(&config_msg)?;
 
-    clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+    clients.as_mut().unwrap().mls_clients[CONFIG]
+        .save_group_state()
+        .unwrap();
 
     Ok(config_msg_enc)
 }
@@ -824,45 +859,78 @@ pub fn process_add_app_config_response(
 
     match clients.as_mut().unwrap().mls_clients[CONFIG].decrypt(config_response, true) {
         Ok(command) => {
-            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+            clients.as_mut().unwrap().mls_clients[CONFIG]
+                .save_group_state()
+                .unwrap();
             match command[0] {
                 OPCODE_ADD_APP_RESPONSE => {
-                    let (add_app_resps_com, add_app_resps_ded, new_app_name):
-                        ([AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS], [AddAppResponseDedicated; NUM_DEDICATED_MLS_CLIENTS], String) =
-                        bincode::deserialize(&command[1..]).map_err(|e| {
-                            io::Error::other(format!("Failed to deserialize add_app msg - {e}"))
-                        })?;
+                    let (add_app_resps_com, add_app_resps_ded, new_app_name): (
+                        [AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS],
+                        [AddAppResponseDedicated; NUM_DEDICATED_MLS_CLIENTS],
+                        String,
+                    ) = bincode::deserialize(&command[1..]).map_err(|e| {
+                        io::Error::other(format!("Failed to deserialize add_app msg - {e}"))
+                    })?;
 
-                    let new_app_data_array: [NewAppData; NUM_MLS_CLIENTS] = std::array::from_fn(|i| {
-                        if i < NUM_COMMON_MLS_CLIENTS {
-                            // Store update proposals, merge the psk_proposal, and commit for the add operation
-                            clients.as_mut().unwrap().mls_clients[i].store_update_proposals(add_app_resps_com[i].update_proposals_vec.clone()).unwrap();
-                            clients.as_mut().unwrap().mls_clients[i].decrypt(add_app_resps_com[i].psk_proposal_vec.clone(), false).unwrap();
-                            clients.as_mut().unwrap().mls_clients[i].decrypt_with_secret(add_app_resps_com[i].commit_msg_vec.clone(), false, secret.clone()).unwrap();
-                            clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
+                    let new_app_data_array: [NewAppData; NUM_MLS_CLIENTS] =
+                        std::array::from_fn(|i| {
+                            if i < NUM_COMMON_MLS_CLIENTS {
+                                // Store update proposals, merge the psk_proposal, and commit for the add operation
+                                clients.as_mut().unwrap().mls_clients[i]
+                                    .store_update_proposals(
+                                        add_app_resps_com[i].update_proposals_vec.clone(),
+                                    )
+                                    .unwrap();
+                                clients.as_mut().unwrap().mls_clients[i]
+                                    .decrypt(add_app_resps_com[i].psk_proposal_vec.clone(), false)
+                                    .unwrap();
+                                clients.as_mut().unwrap().mls_clients[i]
+                                    .decrypt_with_secret(
+                                        add_app_resps_com[i].commit_msg_vec.clone(),
+                                        false,
+                                        secret.clone(),
+                                    )
+                                    .unwrap();
+                                clients.as_mut().unwrap().mls_clients[i]
+                                    .save_group_state()
+                                    .unwrap();
 
-                            // Prepare data for the new app
-                            NewAppData {
-                                camera_key_package: add_app_resps_com[i].camera_key_package.clone(),
-                                welcome_msg_vec: add_app_resps_com[i].welcome_msg_vec.clone(),
-                                group_name: clients.as_mut().unwrap().mls_clients[i].get_group_name().unwrap(),
+                                // Prepare data for the new app
+                                NewAppData {
+                                    camera_key_package: add_app_resps_com[i]
+                                        .camera_key_package
+                                        .clone(),
+                                    welcome_msg_vec: add_app_resps_com[i].welcome_msg_vec.clone(),
+                                    group_name: clients.as_mut().unwrap().mls_clients[i]
+                                        .get_group_name()
+                                        .unwrap(),
+                                }
+                            } else {
+                                NewAppData {
+                                    camera_key_package: add_app_resps_ded
+                                        [i - NUM_COMMON_MLS_CLIENTS]
+                                        .camera_key_package
+                                        .clone(),
+                                    welcome_msg_vec: add_app_resps_ded[i - NUM_COMMON_MLS_CLIENTS]
+                                        .welcome_msg_vec
+                                        .clone(),
+                                    group_name: add_app_resps_ded[i - NUM_COMMON_MLS_CLIENTS]
+                                        .group_name
+                                        .clone(),
+                                }
                             }
-                        } else {
-                            NewAppData {
-                                camera_key_package: add_app_resps_ded[i - NUM_COMMON_MLS_CLIENTS].camera_key_package.clone(),
-                                welcome_msg_vec: add_app_resps_ded[i - NUM_COMMON_MLS_CLIENTS].welcome_msg_vec.clone(),
-                                group_name: add_app_resps_ded[i - NUM_COMMON_MLS_CLIENTS].group_name.clone(),
-                            }
-                        }
-                    });
+                        });
 
                     let new_app_data = (new_app_data_array, new_app_name.clone());
                     let new_app_data_vec = bincode::serialize(&new_app_data).unwrap();
 
-                    return Ok((new_app_data_vec, new_app_name))
+                    return Ok((new_app_data_vec, new_app_name));
                 }
                 _ => {
-                    error!("Error: Unexpected config command response opcode! - {}", command[0]);
+                    error!(
+                        "Error: Unexpected config command response opcode! - {}",
+                        command[0]
+                    );
                     Err(io::Error::other(
                         "Error: Unexpected config response opcode!".to_string(),
                     ))
@@ -888,12 +956,24 @@ pub fn join_camera_groups(
 
     let epochs: [u64; NUM_MLS_CLIENTS] = std::array::from_fn(|i| {
         let app_contact =
-            MlsClient::create_contact("camera", new_app_data_array[i].camera_key_package.clone()).unwrap();
+            MlsClient::create_contact("camera", new_app_data_array[i].camera_key_package.clone())
+                .unwrap();
 
-        clients.as_mut().unwrap().mls_clients[i].process_welcome_with_secret(app_contact, new_app_data_array[i].welcome_msg_vec.clone(), secret.clone(), &new_app_data_array[i].group_name).unwrap();
-        clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
+        clients.as_mut().unwrap().mls_clients[i]
+            .process_welcome_with_secret(
+                app_contact,
+                new_app_data_array[i].welcome_msg_vec.clone(),
+                secret.clone(),
+                &new_app_data_array[i].group_name,
+            )
+            .unwrap();
+        clients.as_mut().unwrap().mls_clients[i]
+            .save_group_state()
+            .unwrap();
 
-        clients.as_mut().unwrap().mls_clients[i].get_epoch().unwrap()
+        clients.as_mut().unwrap().mls_clients[i]
+            .get_epoch()
+            .unwrap()
     });
 
     // FIXME: return the firmware version too.
@@ -916,7 +996,9 @@ pub fn generate_remove_app_request_config_command(
 
     let config_msg_enc = clients.as_mut().unwrap().mls_clients[CONFIG].encrypt(&config_msg)?;
 
-    clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+    clients.as_mut().unwrap().mls_clients[CONFIG]
+        .save_group_state()
+        .unwrap();
 
     Ok(config_msg_enc)
 }
@@ -933,7 +1015,9 @@ pub fn process_remove_app_config_response(
 
     match clients.as_mut().unwrap().mls_clients[CONFIG].decrypt(config_response, true) {
         Ok(command) => {
-            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+            clients.as_mut().unwrap().mls_clients[CONFIG]
+                .save_group_state()
+                .unwrap();
             match command[0] {
                 OPCODE_REMOVE_APP_RESPONSE => {
                     let remove_app_resps_com: [Vec<u8>; NUM_COMMON_MLS_CLIENTS] =
@@ -942,13 +1026,18 @@ pub fn process_remove_app_config_response(
                         })?;
 
                     for i in 0..NUM_COMMON_MLS_CLIENTS {
-                        clients.as_mut().unwrap().mls_clients[i].decrypt(remove_app_resps_com[i].clone(), false).unwrap();
+                        clients.as_mut().unwrap().mls_clients[i]
+                            .decrypt(remove_app_resps_com[i].clone(), false)
+                            .unwrap();
                     }
 
-                    return Ok(())
+                    return Ok(());
                 }
                 _ => {
-                    error!("Error: Unexpected config command response opcode! - {}", command[0]);
+                    error!(
+                        "Error: Unexpected config command response opcode! - {}",
+                        command[0]
+                    );
                     Err(io::Error::other(
                         "Error: Unexpected config response opcode!".to_string(),
                     ))

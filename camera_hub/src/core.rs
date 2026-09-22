@@ -2,16 +2,28 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use crate::config::process_config_command;
+use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
+use crate::livestream::livestream;
+use crate::motion::{
+    prepare_motion_thumbnail, prepare_motion_video, upload_pending_enc_thumbnails,
+    upload_pending_enc_videos,
+};
+use crate::notification_target::{refresh_notification_target, send_notification};
+use crate::pairing::flow::pair_all;
+use crate::pairing::io::{get_names, read_parse_full_credentials};
+use crate::traits::Camera;
+use anyhow::anyhow;
 use cfg_if::cfg_if;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::{ClientType, MlsClient};
 use secluso_client_lib::mls_clients::{
-    MlsClients, FCM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS,
-    THUMBNAIL, LIVESTREAM_DED, CONFIG_DED,
-    MlsClientsCommon, MlsClientsDedicated,
+    MlsClients, MlsClientsCommon, MlsClientsDedicated, CONFIG_DED, FCM, LIVESTREAM_DED,
+    MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
 };
 use secluso_client_lib::notification::{generate_notification, Notification};
 use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -23,19 +35,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Instant;
 use std::{thread, time::Duration};
-use std::collections::{BTreeSet, HashMap};
-use anyhow::anyhow;
-use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
-use crate::motion::{
-    prepare_motion_thumbnail, prepare_motion_video,
-    upload_pending_enc_thumbnails, upload_pending_enc_videos,
-};
-use crate::livestream::livestream;
-use crate::traits::Camera;
-use crate::config::process_config_command;
-use crate::notification_target::{send_notification, refresh_notification_target};
-use crate::pairing::flow::pair_all;
-use crate::pairing::io::{get_names, read_parse_full_credentials};
 
 cfg_if! {
     if #[cfg(feature = "manual")] {
@@ -115,9 +114,8 @@ static ANDROID_SERVER_CREDENTIALS: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 #[cfg(feature = "android")]
-static ANDROID_CAMERA_SETTINGS: std::sync::OnceLock<
-    std::sync::Mutex<AndroidCameraSettings>,
-> = std::sync::OnceLock::new();
+static ANDROID_CAMERA_SETTINGS: std::sync::OnceLock<std::sync::Mutex<AndroidCameraSettings>> =
+    std::sync::OnceLock::new();
 
 #[cfg(any(feature = "android", feature = "test"))]
 #[derive(Clone)]
@@ -158,9 +156,8 @@ impl StopWaiter {
 }
 
 #[cfg(any(feature = "android", feature = "test"))]
-static STOP_WAITERS: std::sync::OnceLock<
-    std::sync::Mutex<Vec<StopWaiter>>,
-> = std::sync::OnceLock::new();
+static STOP_WAITERS: std::sync::OnceLock<std::sync::Mutex<Vec<StopWaiter>>> =
+    std::sync::OnceLock::new();
 
 #[cfg(any(feature = "android", feature = "test"))]
 fn register_stop_waiter(waiter: StopWaiter) {
@@ -227,8 +224,7 @@ pub fn set_android_server_credentials(
         ));
     }
 
-    let lock = ANDROID_SERVER_CREDENTIALS
-        .get_or_init(|| std::sync::Mutex::new(None));
+    let lock = ANDROID_SERVER_CREDENTIALS.get_or_init(|| std::sync::Mutex::new(None));
 
     *lock.lock().unwrap() = Some(AndroidServerCredentials {
         server_username,
@@ -249,7 +245,7 @@ pub fn set_android_camera_settings_core(settings: AndroidCameraSettings) -> io::
             "Error: Android camera facing must be front or back",
         ));
     }
-    
+
     if settings.width == 0 || settings.height == 0 {
         return Err(io::Error::new(
             ErrorKind::InvalidData,
@@ -257,9 +253,7 @@ pub fn set_android_camera_settings_core(settings: AndroidCameraSettings) -> io::
         ));
     }
 
-    if settings.width > i32::MAX as usize
-        || settings.height > i32::MAX as usize
-    {
+    if settings.width > i32::MAX as usize || settings.height > i32::MAX as usize {
         return Err(io::Error::new(
             ErrorKind::InvalidData,
             "Error: Invalid Android camera resolution",
@@ -422,10 +416,7 @@ pub(crate) fn run(args: Args) -> io::Result<()> {
             let result = if args.flag_reset || args.flag_reset_full {
                 reset(camera.as_ref(), args.flag_reset_full)
             } else {
-                core(
-                    camera.as_mut(),
-                    input_camera_secret.clone(),
-                )
+                core(camera.as_mut(), input_camera_secret.clone())
             };
 
             // We need to close the native camera in Android.
@@ -549,7 +540,7 @@ pub fn initialize_mls_clients(camera: &dyn Camera, first_time: bool) -> anyhow::
             client_tag.to_string(),
             ClientType::Camera,
         )
-            .expect("MlsClient::new() for returned error.");
+        .expect("MlsClient::new() for returned error.");
 
         if first_time {
             mls_client.create_group(&group_name)?;
@@ -560,7 +551,9 @@ pub fn initialize_mls_clients(camera: &dyn Camera, first_time: bool) -> anyhow::
         clients.push(mls_client);
     }
 
-    clients.try_into().map_err(|_| anyhow!("Failed to convert clients vec to MlsClients"))
+    clients
+        .try_into()
+        .map_err(|_| anyhow!("Failed to convert clients vec to MlsClients"))
 }
 
 fn split_clients(clients: MlsClients) -> (MlsClientsCommon, MlsClientsDedicated) {
@@ -745,10 +738,7 @@ fn spawn_dedicated_check_threads(
     Ok(())
 }
 
-fn core(
-    camera: &mut dyn Camera,
-    input_camera_secret: Option<Vec<u8>>,
-) -> anyhow::Result<()> {
+fn core(camera: &mut dyn Camera, input_camera_secret: Option<Vec<u8>>) -> anyhow::Result<()> {
     let state_dir = camera.get_state_dir();
     let first_time: bool = !Path::new(&(state_dir.clone() + "/first_time_done")).exists();
 
@@ -899,8 +889,7 @@ fn core(
             );
 
             let state_dir_ref = state_dir.as_str();
-            let target =
-                refresh_notification_target(state_dir_ref, &http_client);
+            let target = refresh_notification_target(state_dir_ref, &http_client);
             let platform_label = target
                 .as_ref()
                 .map(|target| target.platform.as_str())
@@ -1037,7 +1026,11 @@ fn core(
                         // Either an add or remove app op
                         if has_existing_secondary_apps {
                             info!("Sending new app information notification.");
-                            if let Err(e) = send_notification(state_dir.as_str(), &http_client, notification_msg) {
+                            if let Err(e) = send_notification(
+                                state_dir.as_str(),
+                                &http_client,
+                                notification_msg,
+                            ) {
                                 error!("Failed to send new app information notification ({})", e);
                             }
                         }
@@ -1063,8 +1056,7 @@ fn core(
                             // First, stop dedicated worker threads.
                             let livestream_group_name =
                                 clients_ded_sec[LIVESTREAM_DED].get_group_name()?;
-                            let config_group_name =
-                                clients_ded_sec[CONFIG_DED].get_group_name()?;
+                            let config_group_name = clients_ded_sec[CONFIG_DED].get_group_name()?;
 
                             let workers = worker_handles
                                 .get_mut(&app_name)
@@ -1112,7 +1104,10 @@ fn core(
                         None,
                     )?;
                 } else {
-                    error!("Ignoring config command for unknown app: {}", requesting_app_name);
+                    error!(
+                        "Ignoring config command for unknown app: {}",
+                        requesting_app_name
+                    );
                 }
             }
             locked_config_check_time = Some(Instant::now().add(Duration::from_secs(1)));

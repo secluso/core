@@ -10,55 +10,63 @@ use ssh2::Session;
 use std::io::{Read, Write};
 
 struct ExecResult {
-  stdout: String,
-  stderr: String,
-  exit: i32,
+    stdout: String,
+    stderr: String,
+    exit: i32,
 }
 
 fn shell_escape(cmd: &str) -> String {
-  cmd.replace('\'', r"'\''")
+    cmd.replace('\'', r"'\''")
 }
 
 fn remote_sudo(sess: &Session, target: &SshTarget, cmd: &str) -> Result<ExecResult> {
-  let (sudo_cmd, sudo_pw) = sudo_prefix(target);
-  let wrapped = if sudo_cmd.is_empty() {
-    format!("bash -lc '{}'", shell_escape(cmd))
-  } else {
-    format!("{sudo_cmd} bash -lc '{}'", shell_escape(cmd))
-  };
+    let (sudo_cmd, sudo_pw) = sudo_prefix(target);
+    let wrapped = if sudo_cmd.is_empty() {
+        format!("bash -lc '{}'", shell_escape(cmd))
+    } else {
+        format!("{sudo_cmd} bash -lc '{}'", shell_escape(cmd))
+    };
 
-  let mut channel = sess.channel_session().context("Failed to open SSH channel")?;
-  channel.exec(&wrapped).with_context(|| format!("Remote exec failed: {cmd}"))?;
-  if let Some(pw) = sudo_pw {
-    channel.write_all(format!("{pw}\n").as_bytes()).ok();
-  }
-  channel.send_eof().ok();
+    let mut channel = sess
+        .channel_session()
+        .context("Failed to open SSH channel")?;
+    channel
+        .exec(&wrapped)
+        .with_context(|| format!("Remote exec failed: {cmd}"))?;
+    if let Some(pw) = sudo_pw {
+        channel.write_all(format!("{pw}\n").as_bytes()).ok();
+    }
+    channel.send_eof().ok();
 
-  let mut stdout = String::new();
-  let mut stderr = String::new();
-  channel.read_to_string(&mut stdout).ok();
-  channel.stderr().read_to_string(&mut stderr).ok();
-  channel.wait_close().ok();
-  let exit = channel.exit_status().unwrap_or(255);
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    channel.read_to_string(&mut stdout).ok();
+    channel.stderr().read_to_string(&mut stderr).ok();
+    channel.wait_close().ok();
+    let exit = channel.exit_status().unwrap_or(255);
 
-  Ok(ExecResult { stdout, stderr, exit })
+    Ok(ExecResult {
+        stdout,
+        stderr,
+        exit,
+    })
 }
 
 fn summarize(result: &ExecResult) -> String {
-  let stderr = result.stderr.trim();
-  if !stderr.is_empty() {
-    return stderr.to_string();
-  }
-  let stdout = result.stdout.trim();
-  if !stdout.is_empty() {
-    return stdout.to_string();
-  }
-  format!("command exited with status {}", result.exit)
+    let stderr = result.stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.to_string();
+    }
+    let stdout = result.stdout.trim();
+    if !stdout.is_empty() {
+        return stdout.to_string();
+    }
+    format!("command exited with status {}", result.exit)
 }
 
 // Returns true if the server is currently accepting SSH password authentication.
 fn detect_password_auth(sess: &Session, target: &SshTarget) -> Result<bool> {
-  let probe_cmd = r#"
+    let probe_cmd = r#"
 sshd_bin=""
 for candidate in /usr/sbin/sshd /sbin/sshd /usr/local/sbin/sshd; do
   if [ -x "$candidate" ]; then sshd_bin="$candidate"; break; fi
@@ -85,25 +93,28 @@ if [ -z "$val" ]; then val="yes"; fi
 printf 'PARSED=%s\n' "$val"
 "#;
 
-  let result = remote_sudo(sess, target, probe_cmd)?;
-  if result.exit != 0 {
-    bail!("Failed to inspect sshd config: {}", summarize(&result));
-  }
+    let result = remote_sudo(sess, target, probe_cmd)?;
+    if result.exit != 0 {
+        bail!("Failed to inspect sshd config: {}", summarize(&result));
+    }
 
-  let value = result
-    .stdout
-    .lines()
-    .find_map(|line| line.strip_prefix("EFFECTIVE=").or_else(|| line.strip_prefix("PARSED=")))
-    .map(str::trim)
-    .map(str::to_ascii_lowercase)
-    .unwrap_or_else(|| "yes".to_string());
+    let value = result
+        .stdout
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("EFFECTIVE=")
+                .or_else(|| line.strip_prefix("PARSED="))
+        })
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "yes".to_string());
 
-  Ok(value == "yes")
+    Ok(value == "yes")
 }
 
 fn disable_password_auth_remote(sess: &Session, target: &SshTarget) -> Result<()> {
-  // Write a drop-in if the daemon includes sshd_config.d/*.conf, otherwise edit /etc/ssh/sshd_config in place with a backup.
-  let script = r#"
+    // Write a drop-in if the daemon includes sshd_config.d/*.conf, otherwise edit /etc/ssh/sshd_config in place with a backup.
+    let script = r#"
 set -eu
 mkdir -p /etc/ssh/sshd_config.d
 uses_include=0
@@ -199,19 +210,22 @@ if [ -n "$sshd_bin" ]; then
 fi
 "#;
 
-  let result = remote_sudo(sess, target, script)?;
-  if result.exit != 0 {
-    bail!("Failed to disable SSH password authentication: {}", summarize(&result));
-  }
-  Ok(())
+    let result = remote_sudo(sess, target, script)?;
+    if result.exit != 0 {
+        bail!(
+            "Failed to disable SSH password authentication: {}",
+            summarize(&result)
+        );
+    }
+    Ok(())
 }
 
 pub fn check_password_auth(target: &SshTarget) -> Result<bool> {
-  let (sess, _temps) = connect_ssh(target)?;
-  detect_password_auth(&sess, target)
+    let (sess, _temps) = connect_ssh(target)?;
+    detect_password_auth(&sess, target)
 }
 
 pub fn disable_password_auth(target: &SshTarget) -> Result<()> {
-  let (sess, _temps) = connect_ssh(target)?;
-  disable_password_auth_remote(&sess, target)
+    let (sess, _temps) = connect_ssh(target)?;
+    disable_password_auth_remote(&sess, target)
 }

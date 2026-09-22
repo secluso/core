@@ -5,15 +5,15 @@
 use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::blocking::{Body, Client, RequestBuilder};
-use reqwest::Url;
 use reqwest::StatusCode;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::env;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Write, Read};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::time::Duration;
-use std::env;
 
 // Some of these constants are based on the ones in server/main.rs.
 const MAX_MOTION_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 mebibytes
@@ -147,7 +147,9 @@ impl HttpClient {
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
         let auth_header = format!("Basic {}", auth_encoded);
 
-        request_builder.header("Authorization", auth_header).header("Client-Version", env!("CARGO_PKG_VERSION"))
+        request_builder
+            .header("Authorization", auth_header)
+            .header("Client-Version", env!("CARGO_PKG_VERSION"))
     }
 
     pub fn new(
@@ -189,8 +191,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .post(&url))
+        let response = self
+            .authorized_headers(client.post(&url))
             .header("Content-Type", "application/json")
             .body(body.to_string())
             .send()
@@ -224,8 +226,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .get(&url))
+        let response = self
+            .authorized_headers(client.get(&url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e.to_string()))?;
 
@@ -341,14 +343,11 @@ impl HttpClient {
             let body = if buf.len() >= max_size.try_into().unwrap() {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!(
-                        "ios notification response exceeded maximum allowed size"
-                    ),
+                    format!("ios notification response exceeded maximum allowed size"),
                 ));
             } else {
                 String::from_utf8_lossy(&buf).to_string()
             };
-
 
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -362,14 +361,22 @@ impl HttpClient {
     }
 
     /// Uploads an (encrypted) file.
-    pub fn upload_enc_file(&self, group_name: &str, enc_file_path: &Path, num_apps: usize) -> io::Result<()> {
+    pub fn upload_enc_file(
+        &self,
+        group_name: &str,
+        enc_file_path: &Path,
+        num_apps: usize,
+    ) -> io::Result<()> {
         let enc_file_name = enc_file_path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap()
             .to_string();
 
-        let server_url = format!("{}/{}/{}/{}", self.server_addr, group_name, enc_file_name, num_apps);
+        let server_url = format!(
+            "{}/{}/{}/{}",
+            self.server_addr, group_name, enc_file_name, num_apps
+        );
 
         let file = File::open(enc_file_path)?;
         let reader = BufReader::new(file);
@@ -379,8 +386,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .post(server_url))
+        let response = self
+            .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .body(Body::new(reader))
             .send()
@@ -401,10 +408,7 @@ impl HttpClient {
     }
 
     /// Fetches an (encrypted) video file or thumbnail, persists it, and then deletes it from the server.
-    pub fn fetch_enc_file(
-        &self, group_name: &str,
-        enc_file_path: &Path,
-    ) -> io::Result<()> {
+    pub fn fetch_enc_file(&self, group_name: &str, enc_file_path: &Path) -> io::Result<()> {
         let max_size = MAX_MOTION_FILE_SIZE;
 
         let enc_file_name = enc_file_path
@@ -431,8 +435,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .get(&server_url))
+        let response = self
+            .authorized_headers(client.get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -462,8 +466,8 @@ impl HttpClient {
             ));
         }
 
-        let del_response = self.authorized_headers(client
-            .delete(&server_url))
+        let del_response = self
+            .authorized_headers(client.delete(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -485,8 +489,8 @@ impl HttpClient {
         let server_url = format!("{}/{}", self.server_addr, group_name);
 
         let client = Client::new();
-        let response = self.authorized_headers(client
-            .delete(&server_url))
+        let response = self
+            .authorized_headers(client.delete(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -508,8 +512,8 @@ impl HttpClient {
         let server_url = format!("{}/fcm_notification", self.server_addr);
 
         let client = Client::new();
-        let response = self.authorized_headers(client
-            .post(server_url))
+        let response = self
+            .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .body(notification)
             .send()
@@ -534,8 +538,8 @@ impl HttpClient {
         let server_url = format!("{}/livestream/{}", self.server_addr, group_name);
 
         let client = Client::new();
-        let response = self.authorized_headers(client
-            .post(server_url))
+        let response = self
+            .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -565,8 +569,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .get(&server_url))
+        let response = self
+            .authorized_headers(client.get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -624,8 +628,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .post(server_url))
+        let response = self
+            .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .body(data)
             .send()
@@ -654,10 +658,7 @@ impl HttpClient {
     }
 
     /// Retrieves and returns (encrypted) livestream data.
-    pub fn livestream_retrieve(
-        &self, group_name: &str,
-        chunk_number: u64,
-    ) -> io::Result<Vec<u8>> {
+    pub fn livestream_retrieve(&self, group_name: &str, chunk_number: u64) -> io::Result<Vec<u8>> {
         let max_size = MAX_LIVESTREAM_FILE_SIZE;
 
         let server_url = format!(
@@ -671,8 +672,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .get(&server_url))
+        let response = self
+            .authorized_headers(client.get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -693,11 +694,14 @@ impl HttpClient {
         limited.read_to_end(&mut response_vec)?;
 
         if response_vec.len() >= max_size.try_into().unwrap() {
-            return Err(io::Error::new(io::ErrorKind::Other, "Livestream chunk download exceeded maximum allowed size"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Livestream chunk download exceeded maximum allowed size",
+            ));
         }
 
-        let del_response = self.authorized_headers(client
-            .delete(&server_del_url))
+        let del_response = self
+            .authorized_headers(client.delete(&server_del_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -721,8 +725,8 @@ impl HttpClient {
         let server_url = format!("{}/livestream_end/{}", self.server_addr, group_name);
 
         let client = Client::new();
-        let response = self.authorized_headers(client
-            .post(server_url))
+        let response = self
+            .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -755,8 +759,8 @@ impl HttpClient {
         let expected_size = command.len().to_string();
 
         let client = Client::new();
-        let response = self.authorized_headers(client
-            .post(server_url))
+        let response = self
+            .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .header("X-Command-Size", expected_size)
             .body(command)
@@ -790,8 +794,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .get(&server_url))
+        let response = self
+            .authorized_headers(client.get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -840,8 +844,8 @@ impl HttpClient {
         let server_url = format!("{}/config_response/{}", self.server_addr, group_name);
 
         let client = Client::new();
-        let response = self.authorized_headers(client
-            .post(server_url))
+        let response = self
+            .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .body(response)
             .send()
@@ -862,10 +866,7 @@ impl HttpClient {
     }
 
     /// Checks and retrieve a config command response.
-    pub fn fetch_config_response(
-        &self,
-        group_name: &str,
-    ) -> io::Result<Vec<u8>> {
+    pub fn fetch_config_response(&self, group_name: &str) -> io::Result<Vec<u8>> {
         let max_size = MAX_COMMAND_FILE_SIZE;
 
         let server_url = format!("{}/config_response/{}", self.server_addr, group_name);
@@ -875,8 +876,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .get(&server_url))
+        let response = self
+            .authorized_headers(client.get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -897,7 +898,10 @@ impl HttpClient {
         limited.read_to_end(&mut response_vec)?;
 
         if response_vec.len() >= max_size.try_into().unwrap() {
-            return Err(io::Error::new(io::ErrorKind::Other, "Config response download exceeded maximum allowed size"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Config response download exceeded maximum allowed size",
+            ));
         }
 
         Ok(response_vec)
@@ -913,11 +917,11 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = self.authorized_headers(client
-            .get(&server_url))
+        let response = self
+            .authorized_headers(client.get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        
+
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
@@ -954,8 +958,8 @@ impl HttpClient {
         let server_url = format!("{}/send_msg/{}", self.server_addr, msg_tag);
 
         let client = Client::new();
-        let response = self.authorized_headers(client
-            .post(server_url))
+        let response = self
+            .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .body(data)
             .send()
