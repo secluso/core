@@ -1,0 +1,25 @@
+name: PR Size Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  pr-size:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if the PR changes more than 1000 lines (excluding .lock files)
+        run: |
+          total=$(git diff --numstat ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} -- . ':!*.lock' | awk '{ n += $1 + $2 } END { print n + 0 }')
+          echo "This PR changes $total lines."
+          [ "$total" -le 1000 ]
