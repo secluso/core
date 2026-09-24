@@ -1,0 +1,38 @@
+name: Rustfmt Check
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.rs'
+      - '.github/workflows/rustfmt-check.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.rs'
+      - '.github/workflows/rustfmt-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting in every crate
+        run: |
+          for manifest in $(find . -name Cargo.toml); do
+            echo "== $(dirname "$manifest")"
+            (cd "$(dirname "$manifest")" && cargo fmt --all --check)
+          done
