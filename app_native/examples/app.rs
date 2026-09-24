@@ -103,7 +103,7 @@ fn main() -> io::Result<()> {
             panic!("No state to reset!");
         }
 
-        initialize(&mut clients.lock().unwrap(), format!("{}", DATA_DIR), true)?;
+        initialize(&mut clients.lock().unwrap(), DATA_DIR.to_string(), true)?;
 
         let credentials_full_string = String::from_utf8(credentials_full.to_vec()).unwrap();
 
@@ -153,16 +153,13 @@ fn main() -> io::Result<()> {
             "".to_string()
         };
 
-        if add_camera_result == "Error".to_string() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Error: Failed to add camera."),
-            ));
+        if add_camera_result == "Error" {
+            return Err(io::Error::other("Error: Failed to add camera.".to_string()));
         }
 
         File::create(&first_time_path).expect("Could not create file");
     } else {
-        initialize(&mut clients.lock().unwrap(), format!("{}", DATA_DIR), false)?;
+        initialize(&mut clients.lock().unwrap(), DATA_DIR.to_string(), false)?;
 
         if args.flag_reset {
             return deregister_all(clients, &http_client);
@@ -248,7 +245,7 @@ fn main_loop(
 
         if remove_app_needed {
             remove_app_iter -= 1;
-            if remove_app_iter <= 0 {
+            if remove_app_iter == 0 {
                 remove_app(Arc::clone(&clients), &http_client, &remove_app_name)?;
             }
         }
@@ -278,12 +275,12 @@ fn main_loop(
 fn handle_add_app_request(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
-    add_app_data: &Vec<u8>,
+    add_app_data: &[u8],
     add_app_secret: Vec<u8>,
 ) -> io::Result<String> {
     println!("handle_add_app_request called");
 
-    let new_app_key_packages_vec = add_app_data.clone();
+    let new_app_key_packages_vec = add_app_data.to_vec();
 
     let config_msg_enc = generate_add_app_request_config_command(
         &mut clients.lock().unwrap(),
@@ -300,20 +297,16 @@ fn handle_add_app_request(
     for _i in 0..30 {
         println!("Attempt {_i}");
         thread::sleep(Duration::from_secs(2));
-        match http_client.fetch_config_response(&config_group_name) {
-            Ok(resp) => {
-                config_response_opt = Some(resp);
-                break;
-            }
-            Err(_) => {}
+        if let Ok(resp) = http_client.fetch_config_response(&config_group_name) {
+            config_response_opt = Some(resp);
+            break;
         }
     }
 
     if config_response_opt.is_none() {
         println!("Error: couldn't fetch the add_app response. Camera might be offline.");
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: couldn't fetch the add_app response. Camera might be offline."),
+        return Err(io::Error::other(
+            "Error: couldn't fetch the add_app response. Camera might be offline.".to_string(),
         ));
     }
 
@@ -353,20 +346,16 @@ fn remove_app(
     for _i in 0..30 {
         println!("Attempt {_i}");
         thread::sleep(Duration::from_secs(2));
-        match http_client.fetch_config_response(&config_group_name) {
-            Ok(resp) => {
-                config_response_opt = Some(resp);
-                break;
-            }
-            Err(_) => {}
+        if let Ok(resp) = http_client.fetch_config_response(&config_group_name) {
+            config_response_opt = Some(resp);
+            break;
         }
     }
 
     if config_response_opt.is_none() {
         println!("Error: couldn't fetch the remove_app response. Camera might be offline.");
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: couldn't fetch the add_app response. Camera might be offline."),
+        return Err(io::Error::other(
+            "Error: couldn't fetch the add_app response. Camera might be offline.".to_string(),
         ));
     }
 
@@ -408,11 +397,8 @@ fn heartbeat(
         let _ = fetch_motion_videos(Arc::clone(&clients), http_client);
         let _ = fetch_thumbnails(Arc::clone(&clients), http_client);
         let mut config_response_opt: Option<Vec<u8>> = None;
-        match http_client.fetch_config_response(&config_group_name) {
-            Ok(resp) => {
-                config_response_opt = Some(resp);
-            }
-            Err(_) => {}
+        if let Ok(resp) = http_client.fetch_config_response(&config_group_name) {
+            config_response_opt = Some(resp);
         }
 
         if config_response_opt.is_none() {
@@ -434,9 +420,8 @@ fn heartbeat(
                 break;
             }
             Ok(response) if response.contains("\"status\":\"invalid ciphertext\"") => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("The connection to the camera is corrupted. Pair the app with the camera again."),
+                return Err(io::Error::other(
+                    "The connection to the camera is corrupted. Pair the app with the camera again.".to_string(),
                 ));
             }
             Ok(response) if response.contains("add_app") => {
@@ -471,25 +456,22 @@ fn heartbeat(
                 // FIXME: Before processing the heartbeat response, we should make sure all motion videos are fetched and processed.
                 // But we're not doing that here, therefore an "invalid epoch" might not mean a corrupted channel.
                 println!("{response}");
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again."),
+                return Err(io::Error::other(
+                    "The connection to the camera might have got corrupted. Consider pairing the app with the camera again.".to_string(),
                 ));
             }
             Err(e) => {
                 println!("Error processing heartbeat response {e}");
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again."),
+                return Err(io::Error::other(
+                    "The connection to the camera might have got corrupted. Consider pairing the app with the camera again.".to_string(),
                 ));
             }
         }
     }
 
     if !received_heartbeat {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: couldn't fetch the heartbeat response. Camera might be offline."),
+        return Err(io::Error::other(
+            "Error: couldn't fetch the heartbeat response. Camera might be offline.".to_string(),
         ));
     }
 
@@ -534,6 +516,7 @@ fn fetch_motion_videos(
     let mut epoch = read_epoch("motion_epoch");
     println!("fetch_motion_videos: checking for epoch {epoch}");
 
+    #[allow(clippy::never_loop)]
     loop {
         let group_name = get_group_name(&mut clients_locked, "motion")?;
 
@@ -571,6 +554,7 @@ fn fetch_thumbnails(
     let mut clients_locked = clients.lock().unwrap();
     let mut epoch = read_epoch("thumbnail_epoch");
 
+    #[allow(clippy::never_loop)]
     loop {
         let group_name = get_group_name(&mut clients_locked, "thumbnail")?;
 
@@ -617,7 +601,7 @@ fn livestream(
 
     for i in 1..num_chunks {
         let enc_data = fetch_livestream_chunk(http_client, &group_name, i)?;
-        let dec_data = livestream_decrypt(&mut clients.lock().unwrap(), enc_data, i as u64)?;
+        let dec_data = livestream_decrypt(&mut clients.lock().unwrap(), enc_data, i)?;
         println!("Received {} of livestream data.", dec_data.len());
     }
 
@@ -639,8 +623,7 @@ fn fetch_livestream_chunk(
         thread::sleep(Duration::from_secs(1));
     }
 
-    return Err(io::Error::new(
-        io::ErrorKind::Other,
-        format!("Error: could not fetch livestream chunk (timeout)!"),
-    ));
+    Err(io::Error::other(
+        "Error: could not fetch livestream chunk (timeout)!".to_string(),
+    ))
 }

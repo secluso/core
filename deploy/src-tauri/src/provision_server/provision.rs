@@ -600,6 +600,7 @@ fn unreachable_public_status_error(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn probe_public_server_health<F, G>(
     client: &Client,
     status_url: &str,

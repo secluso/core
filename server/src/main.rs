@@ -306,7 +306,7 @@ async fn pair(
     }
 
     if let Some(target) = target_to_persist.as_ref() {
-        if let Err(e) = persist_pair_notification_target(&auth, target).await {
+        if let Err(e) = persist_pair_notification_target(auth, target).await {
             error!("[PAIR] Failed to persist notification target from pair payload: {e}");
         } else {
             debug!(

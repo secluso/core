@@ -184,7 +184,7 @@ fn is_run_rejected(run_id: &str) -> bool {
     REJECTED_RUNS
         .read()
         .ok()
-        .map_or(false, |set| set.contains(run_id))
+        .is_some_and(|set| set.contains(run_id))
 }
 
 fn is_rejected_path(path: &Path) -> bool {
@@ -192,7 +192,7 @@ fn is_rejected_path(path: &Path) -> bool {
     let Some(name) = name else {
         return false;
     };
-    let run_id = name.splitn(2, '_').next().unwrap_or("");
+    let run_id = name.split('_').next().unwrap_or("");
     if run_id.is_empty() {
         return false;
     }
@@ -227,7 +227,7 @@ pub fn purge_run_frames(session_id: &str, run_id: &str) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let prefix = name.splitn(2, '_').next().unwrap_or("");
+        let prefix = name.split('_').next().unwrap_or("");
         if prefix == run_id {
             let _ = fs::remove_file(&path);
         }

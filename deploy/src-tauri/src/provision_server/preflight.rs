@@ -448,6 +448,7 @@ fn verify_sudo_access(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_public_http_reachability(
     app: &AppHandle,
     run_id: Uuid,

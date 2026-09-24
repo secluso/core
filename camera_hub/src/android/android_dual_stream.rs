@@ -231,9 +231,7 @@ fn on_raw_i420(_state: &AndroidStreamState, data: &[u8], width: usize, height: u
     }
 
     let expected = width * height * 3 / 2;
-    if data.len() < expected {
-        return;
-    }
+    if data.len() < expected {}
 
     //FIXME
     /*
@@ -1711,7 +1709,7 @@ mod ndk {
 
             *self.callback_state.session_closed.lock().unwrap() = false;
 
-            let mut session_callbacks = sys::ACameraCaptureSession_stateCallbacks {
+            let session_callbacks = sys::ACameraCaptureSession_stateCallbacks {
                 context: Arc::as_ptr(&self.callback_state) as *mut c_void,
                 onClosed: Some(CameraCallbackState::on_session_closed),
                 onReady: None,
@@ -1726,7 +1724,7 @@ mod ndk {
                 sys::ACameraDevice_createCaptureSession(
                     self.device,
                     self.outputs,
-                    &mut session_callbacks,
+                    &session_callbacks,
                     &mut self.session,
                 )
             } != CAMERA_OK

@@ -132,7 +132,10 @@ fn main() -> ! {
     }
 
     if let Some(ref update_hint_path) = args.flag_update_hint_path {
-        if args.flag_interval_secs % args.flag_hint_check_interval_secs != 0 {
+        if !args
+            .flag_interval_secs
+            .is_multiple_of(args.flag_hint_check_interval_secs)
+        {
             eprintln!(
                 "flag_interval_secs ({}) must be divisible by flag_update_hint_interval_secs ({})",
                 args.flag_interval_secs, args.flag_hint_check_interval_secs
@@ -156,7 +159,7 @@ fn main() -> ! {
 
             sleep(Duration::from_secs(args.flag_hint_check_interval_secs));
 
-            if is_there_update_hint(&update_hint_path) {
+            if is_there_update_hint(update_hint_path) {
                 println!("Update hint received, triggering early check.");
                 if let Err(e) = check_update(&args) {
                     eprintln!("Update check failed: {:#}", e);
@@ -385,7 +388,7 @@ fn create_secure_install_temp_file(
 }
 
 fn select_release_for_component<FLatest, FRequireImmutable>(
-    component: Component,
+    _component: Component,
     current_version: &Version,
     fetch_latest_release_fn: FLatest,
     require_release_is_immutable_fn: FRequireImmutable,
@@ -394,22 +397,20 @@ where
     FLatest: FnOnce() -> Result<secluso_update::GhRelease>,
     FRequireImmutable: FnOnce(&secluso_update::GhRelease) -> Result<()>,
 {
-    match component {
-        _ => {
-            let release = fetch_latest_release_fn()?;
-            require_release_is_immutable_fn(&release)?;
+    {
+        let release = fetch_latest_release_fn()?;
+        require_release_is_immutable_fn(&release)?;
 
-            let latest_version = release.parsed_version()?;
-            if current_version >= &latest_version {
-                println!("Already on the latest immutable GitHub release.");
-                return Ok(None);
-            }
-
-            Ok(Some(SelectedRelease {
-                release,
-                source: ReleaseSource::LatestImmutableGitHub,
-            }))
+        let latest_version = release.parsed_version()?;
+        if current_version >= &latest_version {
+            println!("Already on the latest immutable GitHub release.");
+            return Ok(None);
         }
+
+        Ok(Some(SelectedRelease {
+            release,
+            source: ReleaseSource::LatestImmutableGitHub,
+        }))
     }
 }
 
@@ -421,6 +422,17 @@ fn run(cmd: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+// Minimal shell escaping helper to safely embed unit names into sh -c commands.
+fn shell_escape(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r#"'\''"#))
+    }
 }
 
 #[cfg(test)]
@@ -500,16 +512,5 @@ mod tests {
         // If installation aborts after the temp inode is created, cleanup should remove it, so that we don't accumulate executable staging files in the protected install directory.
         assert!(!tmp_path.exists());
         assert!(!final_path.exists());
-    }
-}
-
-// Minimal shell escaping helper to safely embed unit names into sh -c commands.
-fn shell_escape(s: &str) -> String {
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
-    {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', r#"'\''"#))
     }
 }

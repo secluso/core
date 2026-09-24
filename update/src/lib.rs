@@ -358,6 +358,7 @@ pub fn download_and_verify_release_asset_to_path(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn download_and_verify_release_asset_to_path_with_key_base(
     client: &Client,
     release: &GhRelease,
@@ -846,9 +847,7 @@ fn zip_root_prefix(zip: &mut ZipArchive<Cursor<Bytes>>) -> Option<String> {
         let mut parts = name.splitn(2, '/');
         let top = parts.next().unwrap_or("");
         let rest = parts.next();
-        if rest.is_none() {
-            return None;
-        }
+        rest?;
         if top.is_empty() {
             return None;
         }
@@ -921,6 +920,7 @@ impl VerificationHelper for Helper {
 
     // Collect all successful signer fingerprints reported by Sequoia. caller will then enforce
     // that at least one signer fingerprint matches the allowed GitHub keyring for that signer policy.
+    #[allow(clippy::manual_flatten)]
     fn check(&mut self, structure: MessageStructure) -> openpgp::Result<()> {
         for layer in structure.iter() {
             if let MessageLayer::SignatureGroup { results } = layer {

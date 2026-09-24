@@ -716,6 +716,7 @@ pub fn process_heartbeat_config_response(
                         io::Error::other(format!("Failed to deserialize add_app info msg - {e}"))
                     })?;
 
+                    #[allow(clippy::needless_range_loop)]
                     for i in 0..add_app_resps_com.len() {
                         if i < NUM_COMMON_MLS_CLIENTS {
                             // Store update proposals, merge the psk_proposal, and commit for the add operation
@@ -740,7 +741,7 @@ pub fn process_heartbeat_config_response(
                         }
                     }
 
-                    return Ok("add_app".to_string());
+                    Ok("add_app".to_string())
                 }
                 OPCODE_REMOVE_APP_INFO => {
                     let (remove_app_resps_com, removed_app_name): (
@@ -750,6 +751,7 @@ pub fn process_heartbeat_config_response(
                         io::Error::other(format!("Failed to deserialize remove_app info msg - {e}"))
                     })?;
 
+                    #[allow(clippy::needless_range_loop)]
                     for i in 0..remove_app_resps_com.len() {
                         if i < NUM_COMMON_MLS_CLIENTS {
                             // Store update proposals, merge the psk_proposal, and commit for the add operation
@@ -762,7 +764,7 @@ pub fn process_heartbeat_config_response(
                         }
                     }
 
-                    return Ok(format!("remove_app{}", removed_app_name));
+                    Ok(format!("remove_app{}", removed_app_name))
                 }
                 _ => {
                     error!(
@@ -788,7 +790,7 @@ pub fn process_heartbeat_config_response(
 }
 
 pub fn get_add_app_secret() -> io::Result<String> {
-    generate_add_app_secret().map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    generate_add_app_secret().map_err(io::Error::other)
 }
 
 pub fn get_key_packages(clients: &mut Option<Box<Clients>>) -> io::Result<Vec<u8>> {
@@ -924,7 +926,7 @@ pub fn process_add_app_config_response(
                     let new_app_data = (new_app_data_array, new_app_name.clone());
                     let new_app_data_vec = bincode::serialize(&new_app_data).unwrap();
 
-                    return Ok((new_app_data_vec, new_app_name));
+                    Ok((new_app_data_vec, new_app_name))
                 }
                 _ => {
                     error!(
@@ -1025,13 +1027,14 @@ pub fn process_remove_app_config_response(
                             io::Error::other(format!("Failed to deserialize remove_app msg - {e}"))
                         })?;
 
+                    #[allow(clippy::needless_range_loop)]
                     for i in 0..NUM_COMMON_MLS_CLIENTS {
                         clients.as_mut().unwrap().mls_clients[i]
                             .decrypt(remove_app_resps_com[i].clone(), false)
                             .unwrap();
                     }
 
-                    return Ok(());
+                    Ok(())
                 }
                 _ => {
                     error!(

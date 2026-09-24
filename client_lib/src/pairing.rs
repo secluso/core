@@ -363,8 +363,7 @@ impl MessageTransport for TcpStreamTransport {
 
     fn receive_msg(&mut self, _msg_tag: &str) -> io::Result<Vec<u8>> {
         if let Some(ref mut stream) = self.stream {
-            return read_varying_len(stream)
-                .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()));
+            return read_varying_len(stream).map_err(|e| io::Error::other(e.to_string()));
         }
 
         Err(io::Error::new(
@@ -403,10 +402,7 @@ impl RelayTransport {
 
         let msg = http_client.receive_msg("pairing_request_ack")?;
         if msg != vec![4, 5, 6] {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Unexpected pairing_request_ack msg",
-            ));
+            return Err(io::Error::other("Unexpected pairing_request_ack msg"));
         }
 
         Ok(Self { http_client })
@@ -450,10 +446,7 @@ impl MessageTransport for RelayTransport {
     fn wait_for_pairing_request(&mut self) -> io::Result<()> {
         let msg = self.http_client.receive_msg("pairing_request")?;
         if msg != vec![1, 2, 3] {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Unexpected pairing_request msg",
-            ));
+            return Err(io::Error::other("Unexpected pairing_request msg"));
         }
 
         self.http_client
