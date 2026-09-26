@@ -72,10 +72,10 @@ fn save_logs_to_file() -> io::Result<()> {
 
     let out = cmd.output()?;
     if !out.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("journalctl failed: {:?}", out.status.code()),
-        ));
+        return Err(io::Error::other(format!(
+            "journalctl failed: {:?}",
+            out.status.code()
+        )));
     }
 
     let mut file = File::create(DEBUG_LOGS_FILENAME)?;
@@ -91,8 +91,7 @@ pub fn upload_logs() -> io::Result<()> {
         parse_user_credentials_full(credentials_full_bytes).unwrap();
 
     if !server_addr.starts_with("https") {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "Error: Upload_logs requires the server to use HTTPS",
         ));
     }
@@ -110,7 +109,7 @@ pub fn upload_logs() -> io::Result<()> {
     let client = Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let response = client
         .post(server_url)
@@ -119,13 +118,13 @@ pub fn upload_logs() -> io::Result<()> {
         .header("Client-Version", env!("CARGO_PKG_VERSION"))
         .body(Body::new(reader))
         .send()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     if !response.status().is_success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Server error: {}", response.status()),
-        ));
+        return Err(io::Error::other(format!(
+            "Server error: {}",
+            response.status()
+        )));
     }
 
     Ok(())

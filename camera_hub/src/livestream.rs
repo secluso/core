@@ -44,7 +44,7 @@ impl AsyncWrite for LivestreamWriter {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let data = self.buffer.drain(..).collect();
+        let data = std::mem::take(&mut self.buffer);
 
         if self.sender.send(data).is_err() {
             return Poll::Ready(Err(io::Error::other(

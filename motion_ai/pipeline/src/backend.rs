@@ -1,5 +1,7 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+#![allow(clippy::result_large_err)]
+
 use anyhow::{Context, Result, bail};
 use rocket::{
     State, fairing::AdHoc, form::FromForm, fs::FileServer, get, http::ContentType, post,

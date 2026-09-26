@@ -613,7 +613,7 @@ mod ndk {
 
         let mut yuv_resolutions = BTreeSet::new();
         let mut encoder_surface_resolutions = BTreeSet::new();
-        for chunk in values.chunks_exact(4) {
+        for chunk in values.as_chunks::<4>().0 {
             let format = chunk[0];
             let Ok(width) = usize::try_from(chunk[1]) else {
                 continue;
@@ -710,7 +710,7 @@ mod ndk {
         };
 
         let mut ranges = Vec::new();
-        for chunk in values.chunks_exact(2) {
+        for chunk in values.as_chunks::<2>().0 {
             let min = chunk[0];
             let max = chunk[1];
             if min <= 0 {
