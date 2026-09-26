@@ -1,0 +1,105 @@
+name: Clippy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/clippy.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/clippy.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: camera_hub,         args: "--all-targets --features test" }
+          - { crate: camera_hub,         args: "--all-targets --features raspberry" }
+          - { crate: client_lib,         args: "--all-targets --features http_client,camera_secret_qrcode" }
+          - { crate: client_server_lib,  args: "--all-targets" }
+          - { crate: config_tool,        args: "--all-targets" }
+          - { crate: server,             args: "--all-targets" }
+          - { crate: server_backbone,    args: "--all-targets" }
+          - { crate: tester,             args: "--all-targets" }
+          - { crate: reset,              args: "--all-targets" }
+          - { crate: toggle,             args: "--all-targets" }
+          - { crate: update,             args: "--all-targets" }
+          - { crate: app_native,         args: "--all-targets --features for-example" }
+          - { crate: motion_ai/pipeline, args: "--all-targets" }
+          - { crate: motion_ai/cli,      args: "--all-targets" }
+          - { crate: motion_ai/cli,      args: "--all-targets --features raspberry" }
+          - { crate: deploy/src-tauri,   args: "--all-targets", apt: "libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev" }
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.crate }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install system dependencies
+        if: matrix.apt != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }} -> target
+
+      - name: Run clippy (${{ matrix.args }})
+        run: cargo clippy ${{ matrix.args }} -- -D warnings
+
+  clippy-camera-hub-android:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: camera_hub
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-linux-android
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: camera_hub -> target
+
+      - name: Run clippy (--features android, aarch64-linux-android)
+        run: cargo ndk -t arm64-v8a clippy --lib --features android -- -D warnings
