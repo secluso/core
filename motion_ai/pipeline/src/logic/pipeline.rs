@@ -339,9 +339,8 @@ impl PipelineController {
 
         if let Ok(Some(he)) = health_response {
             self.host_data.event_queue.push_back(he);
-        } else if let Err(e) = health_response {
-            // We should exit. Something's wrong with sensors...
-            return Err(e);
+        } else {
+            health_response?;
         }
 
         self.host_data.event_queue.push_back(PipelineEvent::Tick);

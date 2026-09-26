@@ -1,10 +1,11 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-/// Note: Make sure to use --test-threads=1. That is: cargo test -- --test-threads=1
-/// Tests might reuse file addresses and hence will corrupt each other if run
-/// in parallel.
+// Note: Make sure to use --test-threads=1. That is: cargo test -- --test-threads=1
+// Tests might reuse file addresses and hence will corrupt each other if run
+// in parallel.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::mls_client::{ClientType, Contact, MlsClient};
     use crate::pairing::NUM_SECRET_BYTES;
@@ -29,9 +30,9 @@ mod tests {
     ) -> io::Result<(MlsClient, MlsClient, Contact, Vec<u8>)> {
         let test_data_path = Path::new("test_data");
         if test_data_path.exists() {
-            fs::remove_dir_all(&test_data_path).unwrap();
+            fs::remove_dir_all(test_data_path).unwrap();
         }
-        fs::create_dir(&test_data_path).unwrap();
+        fs::create_dir(test_data_path).unwrap();
 
         let test_data_camera_path = test_data_path.join("camera");
         fs::create_dir(&test_data_camera_path).unwrap();
@@ -96,29 +97,25 @@ mod tests {
     }
 
     fn reinitialize_camera() -> MlsClient {
-        let camera = MlsClient::new(
+        MlsClient::new(
             "camera".to_string(),
             false,
             "test_data/camera".to_string(),
             "camera".to_string(),
             ClientType::Camera,
         )
-        .unwrap();
-
-        camera
+        .unwrap()
     }
 
     fn reinitialize_app() -> MlsClient {
-        let app = MlsClient::new(
+        MlsClient::new(
             "app".to_string(),
             false,
             "test_data/app".to_string(),
             "app".to_string(),
             ClientType::App,
         )
-        .unwrap();
-
-        app
+        .unwrap()
     }
 
     #[test]
@@ -355,7 +352,7 @@ mod tests {
     fn update_with_missed_update_proposal_test() {
         let (mut camera, mut app) = pair();
 
-        let msg = format!("Hello, app!");
+        let msg = "Hello, app!".to_string();
         let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
@@ -431,7 +428,7 @@ mod tests {
     fn update_with_old_update_proposal_test() {
         let (mut camera, mut app) = pair();
 
-        let msg = format!("Hello, app!");
+        let msg = "Hello, app!".to_string();
         let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
@@ -509,7 +506,7 @@ mod tests {
         let (mut camera, mut app) = pair();
 
         //Camera generates a message for the pp
-        let msg = format!("Hello, app! -- 1");
+        let msg = "Hello, app! -- 1".to_string();
         let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
@@ -528,7 +525,7 @@ mod tests {
         camera.save_group_state().unwrap();
 
         //Camera generates another message for the app
-        let msg = format!("Hello, app! -- 2");
+        let msg = "Hello, app! -- 2".to_string();
         let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
@@ -554,7 +551,7 @@ mod tests {
         assert_eq!(app_leaf_nodes_before, app_leaf_nodes_after);
 
         //Camera generates another message for the app
-        let msg = format!("Hello, app! -- 3");
+        let msg = "Hello, app! -- 3".to_string();
         let msg_enc = camera.encrypt(msg.as_bytes()).unwrap();
         camera.save_group_state().unwrap();
 
@@ -1186,7 +1183,7 @@ mod tests {
             let dir = format!("test_data/{}/videos", name);
             fs::create_dir(&dir).unwrap();
 
-            let dec_video_filename = decrypt_video_file(*app, enc_video_pathname).unwrap();
+            let dec_video_filename = decrypt_video_file(app, enc_video_pathname).unwrap();
 
             let dec_video_pathname = format!("{}/{}", dir, dec_video_filename);
 
@@ -1234,7 +1231,7 @@ mod tests {
             let dir = format!("test_data/{}/videos", name);
             fs::create_dir(&dir).unwrap();
 
-            let dec_video_filename = decrypt_video_file(*app, enc_video_pathname).unwrap();
+            let dec_video_filename = decrypt_video_file(app, enc_video_pathname).unwrap();
 
             let dec_video_pathname = format!("{}/{}", dir, dec_video_filename);
 
@@ -1321,7 +1318,7 @@ mod tests {
             fs::create_dir(&dir).unwrap();
 
             let dec_thumbnail_filename =
-                decrypt_thumbnail_file(*app, enc_thumbnail_pathname, "test_data").unwrap();
+                decrypt_thumbnail_file(app, enc_thumbnail_pathname, "test_data").unwrap();
 
             let dec_thumbnail_pathname = format!("{}/{}", dir, dec_thumbnail_filename);
 
@@ -1377,7 +1374,7 @@ mod tests {
             fs::create_dir(&dir).unwrap();
 
             let dec_thumbnail_filename =
-                decrypt_thumbnail_file(*app, enc_thumbnail_pathname, "test_data").unwrap();
+                decrypt_thumbnail_file(app, enc_thumbnail_pathname, "test_data").unwrap();
 
             let dec_thumbnail_pathname = format!("{}/{}", dir, dec_thumbnail_filename);
 

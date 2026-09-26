@@ -155,7 +155,7 @@ impl MlsClient {
             let state_dir_path = file_dir_path.join(&tag);
             if !state_dir_path.exists() {
                 fs::create_dir(&state_dir_path)?;
-                Self::fsync_dir(&file_dir_path)?;
+                Self::fsync_dir(file_dir_path)?;
             }
 
             None
@@ -191,7 +191,7 @@ impl MlsClient {
         let state_dir_path = file_dir_path.join(&self.tag);
         if state_dir_path.exists() {
             fs::remove_dir_all(&state_dir_path)?;
-            Self::fsync_dir(&file_dir_path)?;
+            Self::fsync_dir(file_dir_path)?;
         }
 
         Ok(())
@@ -264,7 +264,7 @@ impl MlsClient {
         let group = self.group.as_mut().unwrap();
 
         // first is true if we're inviting the first app, i.e., the admin_app
-        let first = group.contacts.len() == 0;
+        let first = group.contacts.is_empty();
 
         if !first {
             // Set AAD for the commit message
@@ -589,8 +589,7 @@ impl MlsClient {
             is_admin: group.is_admin,
         });
 
-        let data = bincode::serialize(&group_helper_option)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let data = bincode::serialize(&group_helper_option).map_err(io::Error::other)?;
         let mut g_file = File::create(g_path)?;
         g_file.write_all(&data)?;
         g_file.flush()?;
@@ -606,7 +605,7 @@ impl MlsClient {
         let mut ks_file = File::create(ks_path)?;
         self.provider
             .save_keystore(&ks_file)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         ks_file.flush()?;
         ks_file.sync_all()?;
 
@@ -635,9 +634,7 @@ impl MlsClient {
 
         // restore key store
         let ks_file = File::open(&ks_path)?;
-        crypto
-            .load_keystore(&ks_file)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        crypto.load_keystore(&ks_file).map_err(io::Error::other)?;
 
         // restore group
         let group = Self::load_group_from_file(&g_path, crypto)?;
@@ -948,17 +945,13 @@ impl MlsClient {
 
     fn find_matching_contact<'a>(
         processed_message: &ProcessedMessage,
-        contacts: &'a mut Vec<Contact>,
+        contacts: &'a mut [Contact],
     ) -> Option<&'a mut Contact> {
         let sender = processed_message.credential().clone();
 
-        for contact in contacts {
-            if sender == contact.get_credential() {
-                return Some(contact);
-            }
-        }
-
-        None
+        contacts
+            .iter_mut()
+            .find(|contact| sender == contact.get_credential())
     }
 
     fn process_protocol_message(
@@ -1068,7 +1061,7 @@ impl MlsClient {
                         }
                     }
 
-                    return Ok(vec![]);
+                    Ok(vec![])
                 } else if let Proposal::PreSharedKey(_psk_proposal) = queued_proposal.proposal() {
                     if self.client_type != ClientType::App {
                         return Err(io::Error::other(
@@ -1080,18 +1073,16 @@ impl MlsClient {
                         .store_pending_proposal(self.provider.storage(), *queued_proposal)
                         .unwrap();
 
-                    return Ok(vec![]);
+                    Ok(vec![])
                 } else {
-                    return Err(io::Error::other(
+                    Err(io::Error::other(
                         "Error: Unexpected proposal type!".to_string(),
-                    ));
+                    ))
                 }
             }
-            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal) => {
-                return Err(io::Error::other(
-                    "Error: Unexpected external join proposal message!".to_string(),
-                ));
-            }
+            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal) => Err(
+                io::Error::other("Error: Unexpected external join proposal message!".to_string()),
+            ),
             ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                 if app_msg {
                     return Err(io::Error::other(

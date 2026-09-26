@@ -2,21 +2,19 @@
 
 use std::io::*;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use secluso_motion_ai::backend::spawn_replay_server;
-use secluso_motion_ai::frame::RawFrame;
-use secluso_motion_ai::logic::pipeline::PipelineController;
-use secluso_motion_ai::pipeline;
 
 /// Matches label for MacOS laptop CPU sensor (allows to test on Mac computer when Raspberry Pi is inaccessible)
 #[cfg(not(feature = "raspberry"))]
+#[allow(dead_code)]
 const TEMP_LABEL: &str = "PMU tdie0";
 
 /// Matches label for Broadcom internal temp sensor for CPU on Raspberry Pi Zero 2W & Raspberry Pi 4
 #[cfg(feature = "raspberry")]
+#[allow(dead_code)]
 const TEMP_LABEL: &str = "cpu_thermal temp1";
 
 fn main() -> anyhow::Result<()> {

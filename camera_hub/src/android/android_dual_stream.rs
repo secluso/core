@@ -231,9 +231,7 @@ fn on_raw_i420(_state: &AndroidStreamState, data: &[u8], width: usize, height: u
     }
 
     let expected = width * height * 3 / 2;
-    if data.len() < expected {
-        return;
-    }
+    if data.len() < expected {}
 
     //FIXME
     /*
@@ -615,7 +613,7 @@ mod ndk {
 
         let mut yuv_resolutions = BTreeSet::new();
         let mut encoder_surface_resolutions = BTreeSet::new();
-        for chunk in values.chunks_exact(4) {
+        for chunk in values.as_chunks::<4>().0 {
             let format = chunk[0];
             let Ok(width) = usize::try_from(chunk[1]) else {
                 continue;
@@ -712,7 +710,7 @@ mod ndk {
         };
 
         let mut ranges = Vec::new();
-        for chunk in values.chunks_exact(2) {
+        for chunk in values.as_chunks::<2>().0 {
             let min = chunk[0];
             let max = chunk[1];
             if min <= 0 {
@@ -1711,7 +1709,7 @@ mod ndk {
 
             *self.callback_state.session_closed.lock().unwrap() = false;
 
-            let mut session_callbacks = sys::ACameraCaptureSession_stateCallbacks {
+            let session_callbacks = sys::ACameraCaptureSession_stateCallbacks {
                 context: Arc::as_ptr(&self.callback_state) as *mut c_void,
                 onClosed: Some(CameraCallbackState::on_session_closed),
                 onReady: None,
@@ -1726,7 +1724,7 @@ mod ndk {
                 sys::ACameraDevice_createCaptureSession(
                     self.device,
                     self.outputs,
-                    &mut session_callbacks,
+                    &session_callbacks,
                     &mut self.session,
                 )
             } != CAMERA_OK

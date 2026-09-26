@@ -258,7 +258,7 @@ pub fn encrypt_video_file(
     timestamp: u64,
 ) -> io::Result<u64> {
     debug!("Starting to encrypt video.");
-    let mut enc_file = File::create(&enc_pathname).expect("Could not create encrypted video file");
+    let mut enc_file = File::create(enc_pathname).expect("Could not create encrypted video file");
 
     let update_proposals = motion_mls_client.get_update_proposals()?;
     let update_proposals_msg = bincode::serialize(&update_proposals).unwrap();
@@ -324,7 +324,7 @@ pub fn encrypt_thumbnail_file(
     thumbnail_info: &mut ThumbnailMetaInfo,
 ) -> io::Result<u64> {
     debug!("Starting to encrypt thumbnail.");
-    let mut enc_file = File::create(&enc_pathname).expect("Could not create encrypted video file");
+    let mut enc_file = File::create(enc_pathname).expect("Could not create encrypted video file");
 
     let update_proposals = thumbnail_mls_client.get_update_proposals()?;
     let update_proposals_msg = bincode::serialize(&update_proposals).unwrap();

@@ -341,6 +341,7 @@ impl<P> Mp4Camera<P> {
         // Assemble the NAL (header + rbsp_epb)
         // forbidden_zero_bit=0, nal_ref_idc=0, nal_unit_type=6 (SEI)
         let mut nal = Vec::with_capacity(1 + rbsp_epb.len());
+        #[allow(clippy::identity_op)]
         nal.push(0x00 | NAL_TYPE_SEI);
         nal.extend_from_slice(&rbsp_epb);
 
@@ -387,13 +388,13 @@ impl<P> Mp4Camera<P> {
         if sps.is_empty() || (sps[0] & 0x1F) != 7 {
             return Err(anyhow::anyhow!(
                 "Bad SPS NAL: first byte={:#04x}",
-                sps.get(0).cloned().unwrap_or(0)
+                sps.first().cloned().unwrap_or(0)
             ));
         }
         if pps.is_empty() || (pps[0] & 0x1F) != 8 {
             return Err(anyhow::anyhow!(
                 "Bad PPS NAL: first byte={:#04x}",
-                pps.get(0).cloned().unwrap_or(0)
+                pps.first().cloned().unwrap_or(0)
             ));
         }
 
@@ -414,10 +415,10 @@ impl<P> Mp4Camera<P> {
     fn annexb_to_avcc_frame(frame: &[u8], strip_aud: bool, strip_ps: bool) -> Vec<u8> {
         // Detect start codes 0x000001 or 0x00000001
         fn is_start_code(buf: &[u8], i: usize) -> Option<usize> {
-            if i + 3 <= buf.len() && &buf[i..i + 3] == [0, 0, 1] {
+            if i + 3 <= buf.len() && buf[i..i + 3] == [0, 0, 1] {
                 return Some(3);
             }
-            if i + 4 <= buf.len() && &buf[i..i + 4] == [0, 0, 0, 1] {
+            if i + 4 <= buf.len() && buf[i..i + 4] == [0, 0, 0, 1] {
                 return Some(4);
             }
             None

@@ -313,6 +313,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Mp4 for Fmp4
         Ok(())
     }
 
+    #[allow(clippy::identity_op)]
     async fn finish_fragment(&mut self) -> Result<(), Error> {
         self.video_trak.core.finish();
         self.audio_trak.core.finish();

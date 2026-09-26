@@ -8553,3 +8553,7 @@ dependencies = [
  "syn 2.0.117",
  "winnow 0.7.15",
 ]
+
+[[patch.unused]]
+name = "secluso-app-native"
+version = "1.0.2"

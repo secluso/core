@@ -631,6 +631,8 @@ fn restore_secondary_mls_clients(
         .collect()
 }
 
+type ConfigEncCommands = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
 struct DedicatedCheckWorkers {
     stop_requested: Arc<AtomicBool>,
     handles: Vec<std::thread::JoinHandle<()>>,
@@ -641,7 +643,7 @@ fn spawn_dedicated_check_threads(
     clients_ded: &MlsClientsDedicated,
     http_client: &HttpClient,
     livestream_requests: Arc<Mutex<Vec<String>>>,
-    config_enc_commands: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    config_enc_commands: ConfigEncCommands,
     worker_handles: &mut HashMap<String, DedicatedCheckWorkers>,
 ) -> anyhow::Result<()> {
     let group_livestream_name = clients_ded[LIVESTREAM_DED].get_group_name()?;
@@ -780,7 +782,7 @@ fn core(camera: &mut dyn Camera, input_camera_secret: Option<Vec<u8>>) -> anyhow
     let mut delivery_monitor =
         DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir.clone());
     let livestream_requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-    let config_enc_commands: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(vec![]));
+    let config_enc_commands: ConfigEncCommands = Arc::new(Mutex::new(vec![]));
     let mut clients_ded_secondary = if first_time {
         HashMap::new()
     } else {

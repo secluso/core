@@ -3591,3 +3591,7 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "secluso-app-native"
+version = "1.0.2"

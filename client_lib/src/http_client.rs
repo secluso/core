@@ -189,7 +189,7 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(45)) // Wait up to 45s
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.post(&url))
@@ -203,15 +203,15 @@ impl HttpClient {
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Pairing failed: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Pairing failed: {}",
+                response.status()
+            )));
         }
 
         let text = response
             .text()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         serde_json::from_str::<PairingStatus>(&text)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
     }
@@ -224,7 +224,7 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.get(&url))
@@ -240,10 +240,10 @@ impl HttpClient {
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Notification target fetch failed: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Notification target fetch failed: {}",
+                response.status()
+            )));
         }
 
         let mut buf = Vec::new();
@@ -251,8 +251,7 @@ impl HttpClient {
         limited.read_to_end(&mut buf)?;
 
         if buf.len() >= max_size as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Notification target response exceeded maximum allowed size",
             ));
         }
@@ -291,7 +290,7 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(20))
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         // This does NOT need authorized_headers as it's a separate relay (public Secluso iOS relay)
         let response = client
@@ -301,7 +300,7 @@ impl HttpClient {
             .header("User-Agent", IOS_RELAY_USER_AGENT)
             .body(payload.to_string())
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
@@ -341,16 +340,14 @@ impl HttpClient {
             limited.read_to_end(&mut buf)?;
 
             let body = if buf.len() >= max_size.try_into().unwrap() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("ios notification response exceeded maximum allowed size"),
+                return Err(io::Error::other(
+                    "ios notification response exceeded maximum allowed size".to_string(),
                 ));
             } else {
                 String::from_utf8_lossy(&buf).to_string()
             };
 
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 format!(
                     "Relay error: {status} (content-type={content_type}, server={server}, via={via}, cf-ray={cf_ray}) {body}"
                 ),
@@ -384,24 +381,24 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .body(Body::new(reader))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         Ok(())
@@ -433,22 +430,22 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         let mut file = BufWriter::new(File::create(local_file_path)?);
@@ -460,8 +457,7 @@ impl HttpClient {
         file.into_inner()?.sync_all()?;
 
         if bytes_copied >= max_size {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "File download exceeded maximum allowed size",
             ));
         }
@@ -469,17 +465,17 @@ impl HttpClient {
         let del_response = self
             .authorized_headers(client.delete(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if del_response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !del_response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", del_response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                del_response.status()
+            )));
         }
 
         Ok(())
@@ -492,17 +488,17 @@ impl HttpClient {
         let response = self
             .authorized_headers(client.delete(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         Ok(())
@@ -517,17 +513,17 @@ impl HttpClient {
             .header("Content-Type", "application/octet-stream")
             .body(notification)
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         Ok(())
@@ -542,17 +538,17 @@ impl HttpClient {
             .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         Ok(())
@@ -567,22 +563,22 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(None) // Disable timeout to allow long-polling
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         let mut buf = Vec::new();
@@ -590,8 +586,7 @@ impl HttpClient {
         limited.read_to_end(&mut buf)?;
 
         if buf.len() >= max_size as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Livestream check response exceeded maximum allowed size",
             ));
         }
@@ -604,10 +599,7 @@ impl HttpClient {
             }
         }
 
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Server error"),
-        ));
+        Err(io::Error::other("Server error".to_string()))
     }
 
     /// Uploads some (encrypted) livestream data to the server.
@@ -626,33 +618,31 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .body(data)
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         let num_files: usize = response
             .text()
-            .map_err(|e: reqwest::Error| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+            .map_err(|e: reqwest::Error| io::Error::other(e.to_string()))?
             .parse()
-            .map_err(|e: std::num::ParseIntError| {
-                io::Error::new(io::ErrorKind::Other, e.to_string())
-            })?;
+            .map_err(|e: std::num::ParseIntError| io::Error::other(e.to_string()))?;
 
         Ok(num_files)
     }
@@ -670,22 +660,22 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         let mut response_vec = Vec::new();
@@ -694,8 +684,7 @@ impl HttpClient {
         limited.read_to_end(&mut response_vec)?;
 
         if response_vec.len() >= max_size.try_into().unwrap() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Livestream chunk download exceeded maximum allowed size",
             ));
         }
@@ -703,17 +692,17 @@ impl HttpClient {
         let del_response = self
             .authorized_headers(client.delete(&server_del_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if del_response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !del_response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", del_response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                del_response.status()
+            )));
         }
 
         Ok(response_vec)
@@ -729,17 +718,17 @@ impl HttpClient {
             .authorized_headers(client.post(server_url))
             .header("Content-Type", "application/octet-stream")
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         Ok(())
@@ -765,17 +754,17 @@ impl HttpClient {
             .header("X-Command-Size", expected_size)
             .body(command)
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         Ok(())
@@ -792,22 +781,22 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(None) // Disable timeout to allow long-polling
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         let mut buf = Vec::new();
@@ -815,8 +804,7 @@ impl HttpClient {
         limited.read_to_end(&mut buf)?;
 
         if buf.len() >= max_size as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Livestream check response exceeded maximum allowed size",
             ));
         }
@@ -824,19 +812,15 @@ impl HttpClient {
 
         for line in reader.lines() {
             let line = line?;
-            if line.starts_with("data:") {
-                let encoded_command = &line[5..];
+            if let Some(encoded_command) = line.strip_prefix("data:") {
                 let command = base64_engine
                     .decode(encoded_command)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    .map_err(|e| io::Error::other(e.to_string()))?;
                 return Ok(command);
             }
         }
 
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Server error"),
-        ));
+        Err(io::Error::other("Server error".to_string()))
     }
 
     /// Send a config response
@@ -849,17 +833,17 @@ impl HttpClient {
             .header("Content-Type", "application/octet-stream")
             .body(response)
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         Ok(())
@@ -874,22 +858,22 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         let mut response_vec = Vec::new();
@@ -898,8 +882,7 @@ impl HttpClient {
         limited.read_to_end(&mut response_vec)?;
 
         if response_vec.len() >= max_size.try_into().unwrap() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Config response download exceeded maximum allowed size",
             ));
         }
@@ -915,29 +898,26 @@ impl HttpClient {
         let client = Client::builder()
             .timeout(None)
             .build()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let response = self
             .authorized_headers(client.get(&server_url))
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if response.status() == StatusCode::REQUEST_TIMEOUT {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Server error: timeout",
-            ));
+            return Err(io::Error::other("Server error: timeout"));
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         let mut data = Vec::new();
@@ -945,8 +925,7 @@ impl HttpClient {
         limited.read_to_end(&mut data)?;
 
         if data.len() >= max_size as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Relay message exceeded maximum allowed size",
             ));
         }
@@ -963,17 +942,17 @@ impl HttpClient {
             .header("Content-Type", "application/octet-stream")
             .body(data)
             .send()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
         }
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+            return Err(io::Error::other(format!(
+                "Server error: {}",
+                response.status()
+            )));
         }
 
         Ok(())

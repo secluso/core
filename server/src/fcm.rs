@@ -166,7 +166,7 @@ fn fetch_token(
     let exp = iat + Duration::minutes(60);
     let claims = Claims {
         iss: service_account_key.client_email.clone(),
-        scope: scope,
+        scope,
         aud: token_uri.as_str().to_string(),
         exp: exp.timestamp() as usize,
         iat: iat.timestamp() as usize,
@@ -325,7 +325,7 @@ fn create_app(
             thread::sleep(time::Duration::from_millis(1000));
 
             if let Ok(Some(app_id)) =
-                fetch_operation_status(&client, access_token, operation_name.to_string())
+                fetch_operation_status(client, access_token, operation_name.to_string())
             {
                 return Ok(Some(app_id));
             }
@@ -473,7 +473,7 @@ pub fn fetch_config() -> Result<ConfigResponse, Box<dyn Error>> {
         .as_array()
         .context("'client' key in Android JSON was not an array")?;
     let first_client = clients_array
-        .get(0)
+        .first()
         .context("clients_array in Android JSON had 0 keys")?;
 
     let api_key_android = first_client
@@ -481,7 +481,7 @@ pub fn fetch_config() -> Result<ConfigResponse, Box<dyn Error>> {
         .context("Failed to find api key in Android JSON")?
         .as_array()
         .context("Failed to convert api key field to array in Android JSON")?
-        .get(0)
+        .first()
         .context("Failed to find any keys in Android JSON")?
         .get("current_key")
         .context("Failed to get current key in Android JSON")?
@@ -505,7 +505,7 @@ pub fn fetch_config() -> Result<ConfigResponse, Box<dyn Error>> {
         app_id_android: app_id_android.to_string(),
         app_id_ios: app_id_ios.to_string(),
         messaging_sender_id: messaging_sender_id.to_string(),
-        project_id: project_id,
+        project_id,
         storage_bucket: storage_bucket.to_string(),
         bundle_id: BUNDLE_ID.to_string(),
     };

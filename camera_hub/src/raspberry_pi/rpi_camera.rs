@@ -195,7 +195,7 @@ impl Mp4Camera<RaspberryPiPlatform> {
         //                       1920x1080 [47.57 fps - (680, 692)/1920x1080 crop]
         //                       3280x2464 [21.19 fps - (0, 0)/3280x2464 crop]
 
-        /**
+        /*
             For IMX708, source: https://forums.raspberrypi.com/viewtopic.php?t=381114
             Available cameras
             -----------------
@@ -213,7 +213,7 @@ impl Mp4Camera<RaspberryPiPlatform> {
         let stdout = String::from_utf8(output.stdout).unwrap();
 
         // Parse the output (as seen in the example above)
-        return if stdout.contains("imx219") {
+        if stdout.contains("imx219") {
             Some(CameraResolution {
                 width: CAMERA_RESOLUTION_V2.0,
                 height: CAMERA_RESOLUTION_V2.1,
@@ -230,6 +230,6 @@ impl Mp4Camera<RaspberryPiPlatform> {
             })
         } else {
             None
-        };
+        }
     }
 }

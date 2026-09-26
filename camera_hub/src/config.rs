@@ -21,6 +21,7 @@ use secluso_client_lib::pairing::get_random_name;
 use std::collections::HashMap;
 use std::io;
 
+#[allow(clippy::too_many_arguments)]
 pub fn process_config_command(
     clients_com: &mut MlsClientsCommon,
     clients_ded: &mut MlsClientsDedicated,
@@ -286,8 +287,8 @@ fn create_client(
     let (camera_name, group_name) = get_names(
         &clients_ded[CONFIG_DED].get_file_dir(), // Could use either of the clients
         true,
-        format!("camera_{}_name", &tag),
-        format!("group_{}_name", &tag),
+        format!("camera_{}_name", tag),
+        format!("group_{}_name", tag),
     )?;
     let mut client = MlsClient::new(
         camera_name,

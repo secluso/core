@@ -77,8 +77,8 @@ impl Camera for TestCamera {
         let mut data = vec![0u8; (width * height * 3) as usize];
 
         // Fill with dummy pattern
-        for i in 0..data.len() {
-            data[i] = (i % 256) as u8;
+        for (i, byte) in data.iter_mut().enumerate() {
+            *byte = (i % 256) as u8;
         }
 
         let img = RgbImage::from_raw(width, height, data).expect("Buffer size mismatch");

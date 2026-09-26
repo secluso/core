@@ -78,7 +78,7 @@ where
         .ok_or_else(|| ModelError::Inference(format!("No path for model kined: {:?}", kind)))?;
 
     // If we haven't made this yet or we changed the path, we'll go ahead and re-create it now.
-    let entry = cache.entry(*kind).or_try_insert_with(|| {
+    let entry = EntryExt::or_try_insert_with(cache.entry(*kind), || {
         let sess = build_session(wanted_path)?;
         Ok::<SessionEntry, ModelError>(SessionEntry {
             path: wanted_path.clone(),

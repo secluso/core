@@ -192,6 +192,7 @@ fn compute_all_tile_luts(
 
 /// Compute the LUT for one tile using a histogram with 256 bins.
 /// Histogram bins exceeding the clip limit are clipped and their excess is redistributed.
+#[allow(clippy::manual_checked_ops)]
 fn compute_tile_lut(
     image: &[Vec<u8>],
     x0: usize,

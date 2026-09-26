@@ -226,7 +226,7 @@ pub mod types {
         pub ok: bool,
     }
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize, Default)]
     pub struct ConfigResponse {
         pub api_key_ios: String,
         pub api_key_android: String,
@@ -236,21 +236,6 @@ pub mod types {
         pub project_id: String,
         pub storage_bucket: String,
         pub bundle_id: String,
-    }
-
-    impl Default for ConfigResponse {
-        fn default() -> Self {
-            Self {
-                api_key_ios: String::new(),
-                api_key_android: String::new(),
-                app_id_ios: String::new(),
-                app_id_android: String::new(),
-                messaging_sender_id: String::new(),
-                project_id: String::new(),
-                storage_bucket: String::new(),
-                bundle_id: String::new(),
-            }
-        }
     }
 }
 
