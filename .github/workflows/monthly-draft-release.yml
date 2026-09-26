@@ -1,0 +1,375 @@
+name: Monthly Draft Release
+
+on:
+  schedule:
+    # 06:00 UTC
+    # 1st of every month
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monthly-draft-release
+  cancel-in-progress: false
+
+jobs:
+  # Bump every crate to the next version + commit + tag the commit
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      sha: ${{ steps.bump.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: bump
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cur="$(tr -d ' \t\r\n' < deploy/release-version.txt)"
+          [[ "$cur" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Bad version '$cur'" >&2; exit 1; }
+          IFS=. read -r MA MI PA <<< "$cur"
+          new="$MA.$MI.$((PA + 1))"
+          echo "Bumping $cur -> $new"
+
+          mapfile -t manifests < <(git ls-files '*Cargo.toml')
+          local_names=""
+          for f in "${manifests[@]}"; do
+            n="$(awk '/^\[package\]/{p=1} p&&/^name[[:space:]]*=/{gsub(/"/,"",$3); print $3; exit}' "$f")"
+            [[ -n "$n" ]] && local_names+="$n "
+          done
+          echo "Local crates: $local_names"
+
+          # Bump the [package] version in all the Cargo toml manifests
+          for f in "${manifests[@]}"; do
+            awk -v v="$new" '
+              /^\[/ { inpkg = ($0 == "[package]") ? 1 : 0 }
+              inpkg && /^version[[:space:]]*=/ && !done { sub(/"[^"]*"/, "\"" v "\""); done=1 }
+              { print }
+            ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+          done
+
+          # Bump local crate entries in Cargo.lock files
+          while IFS= read -r lock; do
+            awk -v v="$new" -v names="$local_names" '
+              BEGIN { split(names, a, " "); for (i in a) if (a[i] != "") loc[a[i]] = 1 }
+              /^\[\[package\]\]/ { cur = ""; inpkg = 1 }
+              inpkg && /^name[[:space:]]*=/ { cur = $3; gsub(/"/, "", cur) }
+              inpkg && /^version[[:space:]]*=/ && (cur in loc) { sub(/"[^"]*"/, "\"" v "\""); inpkg = 0 }
+              { print }
+            ' "$lock" > "$lock.tmp" && mv "$lock.tmp" "$lock"
+          done < <(git ls-files '*Cargo.lock')
+
+          printf '%s\n' "$new" > deploy/release-version.txt
+
+          # Commit and push bump
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: release ver bump for v$new"
+          git push origin "HEAD:${{ github.ref_name }}"
+
+          sha="$(git rev-parse HEAD)"
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          echo "tag=v$new" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Bump commit: $sha (tag v$new)"
+
+  # Linux AppImage (no OS signing)
+  build-linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - name: Build Linux deploy AppImage
+        id: build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p releases/builds
+          before="${RUNNER_TEMP}/before.txt"; after="${RUNNER_TEMP}/after.txt"
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$before"
+          ./releases/build.sh --target deploy --profile linux-x64
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$after"
+          run_dir="$(comm -13 "$before" "$after" | tail -n 1)"
+          [[ -n "$run_dir" && -f "$run_dir/manifest.json" ]] || { echo "No build output" >&2; exit 1; }
+          echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
+      - name: Stage AppImage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ver="${{ needs.version.outputs.version }}"
+          src="${{ steps.build.outputs.run_dir }}/artifacts/x86_64-unknown-linux-gnu/bundle/appimage"
+          out="${RUNNER_TEMP}/dist"; mkdir -p "$out"
+          appimage="$(find "$src" -maxdepth 1 -name '*.AppImage' | head -n 1)"
+          [[ -n "$appimage" ]] || { echo "No AppImage in $src" >&2; exit 1; }
+          cp "$appimage" "$out/Secluso-Deploy-${ver}-linux-x64.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
+  # Cross-build the Windows NSIS installer on Linux
+  build-windows:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - name: Build Windows deploy installer (unsigned)
+        id: build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p releases/builds
+          before="${RUNNER_TEMP}/before.txt"; after="${RUNNER_TEMP}/after.txt"
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$before"
+          ./releases/build.sh --target deploy --profile windows-x64
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$after"
+          run_dir="$(comm -13 "$before" "$after" | tail -n 1)"
+          [[ -n "$run_dir" && -f "$run_dir/manifest.json" ]] || { echo "No build output" >&2; exit 1; }
+          echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
+      - name: Stage unsigned installer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          src="${{ steps.build.outputs.run_dir }}/artifacts/x86_64-pc-windows-msvc/bundle/nsis"
+          out="${RUNNER_TEMP}/unsigned"; mkdir -p "$out"
+          exe="$(find "$src" -maxdepth 1 -name '*-setup.exe' -o -name '*.exe' | head -n 1)"
+          [[ -n "$exe" ]] || { echo "No NSIS installer in $src" >&2; exit 1; }
+          cp "$exe" "$out/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows
+          path: ${{ runner.temp }}/unsigned/
+          if-no-files-found: error
+
+  # Authenticode-sign on a Windows runner
+  sign-windows:
+    needs: [version, build-windows]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-windows
+          path: unsigned
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: >-
+            {"clientId":"${{ secrets.AZURE_CLIENT_ID }}",
+             "clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}",
+             "tenantId":"${{ secrets.AZURE_TENANT_ID }}",
+             "subscriptionId":""}
+      - name: Install Trusted Signing client (dlib)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dest = "$env:RUNNER_TEMP\ts"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          nuget install Microsoft.Trusted.Signing.Client -Version 1.0.60 -OutputDirectory $dest -ExcludeVersion
+          $dlib = Get-ChildItem -Path $dest -Recurse -Filter Azure.CodeSigning.Dlib.dll |
+                  Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
+          if (-not $dlib) { throw "Azure.CodeSigning.Dlib.dll (x64) not found" }
+          "TS_DLIB=$($dlib.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Write Trusted Signing metadata.json
+        shell: pwsh
+        run: |
+          $meta = @{
+            Endpoint = "${{ vars.TRUSTED_SIGNING_ENDPOINT }}"
+            CodeSigningAccountName = "${{ vars.TRUSTED_SIGNING_ACCOUNT }}"
+            CertificateProfileName = "${{ vars.TRUSTED_SIGNING_PROFILE }}"
+          } | ConvertTo-Json
+          $path = "$env:RUNNER_TEMP\metadata.json"
+          $meta | Out-File -FilePath $path -Encoding utf8
+          "TS_METADATA=$path" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Sign installer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          exe="$(find unsigned -maxdepth 1 -name '*.exe' | head -n 1)"
+          [[ -n "$exe" ]] || { echo "No unsigned installer" >&2; exit 1; }
+          out="${RUNNER_TEMP}/dist"; mkdir -p "$out"
+          signtool="$(find "/c/Program Files (x86)/Windows Kits/10/bin" -name signtool.exe -path '*x64*' | sort | tail -n 1)"
+          ./releases/sign_windows_release.sh \
+            --file "$exe" \
+            --outdir "$out" \
+            --dlib "$TS_DLIB" \
+            --metadata-json "$TS_METADATA" \
+            --signtool "$signtool"
+      - name: Rename to release asset name
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ver="${{ needs.version.outputs.version }}"
+          signed="$(find "${RUNNER_TEMP}/dist" -maxdepth 1 -name '*.exe' | head -n 1)"
+          mv "$signed" "${RUNNER_TEMP}/dist/Secluso-Deploy-${ver}-windows-x64-setup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
+  # macOS: build + Developer ID sign + notarize
+  build-sign-macos:
+    needs: version
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Load pinned macOS tool versions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          while IFS='=' read -r name value; do
+            case "$name" in
+              ''|\#*) continue ;;
+              DEPLOY_*|MACOS_HOST_*|RUST_DIGEST__*) echo "$name=$value" >> "$GITHUB_ENV" ;;
+            esac
+          done < releases/digests.lock.env
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rustup toolchain install "$MACOS_HOST_RUSTC_VERSION" --profile minimal --target aarch64-apple-darwin
+          rustup default "$MACOS_HOST_RUSTC_VERSION"
+      - name: Install pinned Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.MACOS_HOST_NODE_VERSION }}
+      - name: Install pinned pnpm
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tgz="${RUNNER_TEMP}/pnpm.tgz"
+          curl -fsSL --retry 8 --retry-delay 2 --retry-all-errors \
+            "https://registry.npmjs.org/pnpm/-/pnpm-${DEPLOY_PNPM_VERSION}.tgz" -o "$tgz"
+          node -e 'const c=require("crypto"),f=require("fs");const[p,i]=process.argv.slice(1);const[a,e]=i.split("-");const g=c.createHash(a).update(f.readFileSync(p)).digest("base64");if(g!==e){console.error("integrity mismatch");process.exit(1)}' \
+            "$tgz" "$DEPLOY_PNPM_TARBALL_INTEGRITY"
+          npm install -g --no-audit --no-fund "$tgz"
+      - name: Select and verify pinned Xcode
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          minor="${MACOS_HOST_XCODE_VERSION%.*}"
+          for c in "/Applications/Xcode_${MACOS_HOST_XCODE_VERSION}.app" "/Applications/Xcode_${minor}.app" "/Applications/Xcode.app"; do
+            [[ -d "$c" ]] && { sudo xcode-select -s "$c/Contents/Developer"; break; }
+          done
+          [[ "$(xcodebuild -version | awk '/^Xcode /{print $2; exit}')" == "$MACOS_HOST_XCODE_VERSION" ]] || { echo "Xcode mismatch" >&2; exit 1; }
+          [[ "$(xcrun --show-sdk-version)" == "$MACOS_HOST_SDK_VERSION" ]] || { echo "SDK mismatch" >&2; exit 1; }
+
+      - name: Build unsigned macOS deploy app
+        id: build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p releases/builds
+          before="${RUNNER_TEMP}/before.txt"; after="${RUNNER_TEMP}/after.txt"
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$before"
+          ./releases/build.sh --target deploy --profile macos-arm64
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$after"
+          run_dir="$(comm -13 "$before" "$after" | tail -n 1)"
+          [[ -n "$run_dir" && -f "$run_dir/manifest.json" ]] || { echo "No build output" >&2; exit 1; }
+          echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID certificate
+        shell: bash
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          kc="${RUNNER_TEMP}/signing.keychain-db"
+          p12="${RUNNER_TEMP}/cert.p12"
+          echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$kc"
+          security import "$p12" -k "$kc" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | sed s/\"//g)
+          rm -f "$p12"
+
+      - name: Store notarytool credentials
+        shell: bash
+        env:
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -Eeuo pipefail
+          p8="${RUNNER_TEMP}/api_key.p8"
+          echo "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$p8"
+          xcrun notarytool store-credentials secluso-notary \
+            --key "$p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID"
+          rm -f "$p8"
+
+      - name: Sign, notarize, and package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ver="${{ needs.version.outputs.version }}"
+          out="${RUNNER_TEMP}/dist"; mkdir -p "$out"
+          ./releases/sign_macos_release.sh \
+            --run-dir "${{ steps.build.outputs.run_dir }}" \
+            --triple aarch64-apple-darwin \
+            --identity "${{ vars.APPLE_SIGN_IDENTITY }}" \
+            --notary-profile secluso-notary \
+            --outdir "$out" \
+            --zip-name "Secluso-Deploy-${ver}-macos-arm64.app.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
+  draft-release:
+    needs: [version, build-linux, sign-windows, build-sign-macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd dist
+          ls -la
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tag="${{ needs.version.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* \
+              --draft \
+              --target "${{ needs.version.outputs.sha }}" \
+              --title "$tag" \
+              --notes "TODO: verify reproducible builds + also GPG sign before publish"
+          fi
