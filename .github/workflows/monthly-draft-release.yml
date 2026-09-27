@@ -439,7 +439,7 @@ jobs:
           if-no-files-found: error
 
   draft-release:
-    needs: [version, build-linux, sign-windows, build-sign-macos, bundle-runtime, mobile-aab]
+    needs: [version, build-linux, sign-windows, build-sign-macos, bundle-runtime, mobile-aab, os-image]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -461,6 +461,7 @@ jobs:
             printf '%s  %s\n' "$(h "Secluso-Deploy-${ver}-linux-x64.AppImage")"  "Secluso-Deploy-${ver}-linux-x64.AppImage"
             printf '%s  %s\n' "$(h "Secluso-Deploy-${ver}-windows-x64-setup.exe")" "Secluso-Deploy-${ver}-windows-x64-setup.exe"
             printf '%s  %s\n' "${{ needs.mobile-aab.outputs.aab_sha256 }}" "${{ needs.mobile-aab.outputs.aab_name }}"
+            printf '%s  %s\n' "${{ needs.os-image.outputs.os_sha256 }}" "${{ needs.os-image.outputs.os_name }}"
           } > "$sums"
           cat "$sums"
       - name: Create or update draft release
@@ -535,4 +536,49 @@ jobs:
           sha256="$(sha256sum "$aab" | awk '{print $1}')"
           echo "aab_name=$name" >> "$GITHUB_OUTPUT"
           echo "aab_sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "$sha256  $name"
+
+  # Build the reproducible Pi OS image and get its checksum.
+  # Triggers secluso/os monthly-os-release workflow
+  os-image:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    outputs:
+      os_name: ${{ steps.fetch.outputs.os_name }}
+      os_sha256: ${{ steps.fetch.outputs.os_sha256 }}
+    steps:
+      - name: Trigger, wait for, and fetch the OS image
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.OS_DISPATCH_TOKEN }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPO=secluso/os
+          WF=monthly-os-release.yml
+          VER="${{ needs.version.outputs.version }}"
+          SHA="${{ needs.version.outputs.sha }}"
+
+          before="$(gh run list --repo "$REPO" --workflow "$WF" -L 1 --json databaseId -q '.[0].databaseId // "0"')"
+          gh workflow run "$WF" --repo "$REPO" -f version="$VER" -f backend_sha="$SHA"
+
+          run_id=""
+          for _ in $(seq 1 60); do
+            sleep 10
+            cand="$(gh run list --repo "$REPO" --workflow "$WF" -L 1 --json databaseId -q '.[0].databaseId // "0"')"
+            if [[ "$cand" != "$before" ]]; then run_id="$cand"; break; fi
+          done
+          [[ -n "$run_id" ]] || { echo "Could not find the triggered OS run" >&2; exit 1; }
+          echo "OS run: $run_id, waiting (Yocto build)..."
+          gh run watch "$run_id" --repo "$REPO" --exit-status
+
+          tag="v$VER"
+          gh release download "$tag" --repo "$REPO" --pattern 'secluso-pi-image-*.wic' --dir os_image --clobber
+          img="$(find os_image -maxdepth 1 -name '*.wic' | head -n 1)"
+          [[ -n "$img" ]] || { echo "OS image not found in release $tag" >&2; exit 1; }
+          name="$(basename "$img")"
+          sha256="$(sha256sum "$img" | awk '{print $1}')"
+          echo "os_name=$name" >> "$GITHUB_OUTPUT"
+          echo "os_sha256=$sha256" >> "$GITHUB_OUTPUT"
           echo "$sha256  $name"
