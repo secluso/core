@@ -340,8 +340,106 @@ jobs:
           path: ${{ runner.temp }}/dist/
           if-no-files-found: error
 
+  # Runtime binaries are built per-arch on NATIVE runners
+  build-runtime-x64:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - name: Build runtime binaries (--target all --profile release-x64)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p releases/builds
+          before="${RUNNER_TEMP}/before.txt"; after="${RUNNER_TEMP}/after.txt"
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$before"
+          ./releases/build.sh --target all --profile release-x64
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$after"
+          run_dir="$(comm -13 "$before" "$after" | tail -n 1)"
+          [[ -n "$run_dir" && -f "$run_dir/manifest.json" ]] || { echo "No build output" >&2; exit 1; }
+          stage="${RUNNER_TEMP}/rt"; mkdir -p "$stage"
+          cp "$run_dir/manifest.json" "$stage/"
+          cp -a "$run_dir/artifacts" "$stage/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-x64
+          path: ${{ runner.temp }}/rt/
+          if-no-files-found: error
+
+  build-runtime-arm64:
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - name: Build runtime binaries (--target all --profile release-arm64)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p releases/builds
+          before="${RUNNER_TEMP}/before.txt"; after="${RUNNER_TEMP}/after.txt"
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$before"
+          ./releases/build.sh --target all --profile release-arm64
+          find releases/builds -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort > "$after"
+          run_dir="$(comm -13 "$before" "$after" | tail -n 1)"
+          [[ -n "$run_dir" && -f "$run_dir/manifest.json" ]] || { echo "No build output" >&2; exit 1; }
+          stage="${RUNNER_TEMP}/rt"; mkdir -p "$stage"
+          cp "$run_dir/manifest.json" "$stage/"
+          cp -a "$run_dir/artifacts" "$stage/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-arm64
+          path: ${{ runner.temp }}/rt/
+          if-no-files-found: error
+
+  # Merge the two per-arch builds into one artifact-dir
+  bundle-runtime:
+    needs: [version, build-runtime-x64, build-runtime-arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-x64
+          path: rt-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-arm64
+          path: rt-arm64
+      - name: Merge per-arch artifacts + manifests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          merged="${RUNNER_TEMP}/merged"; mkdir -p "$merged/artifacts"
+          cp -a rt-x64/artifacts/. "$merged/artifacts/"
+          cp -a rt-arm64/artifacts/. "$merged/artifacts/"
+          jq -s '{build: .[0].build, artifacts: (.[0].artifacts + .[1].artifacts)}' \
+            rt-x64/manifest.json rt-arm64/manifest.json > "$merged/manifest.json"
+          echo "MERGED_DIR=$merged" >> "$GITHUB_ENV"
+      - name: Bundle secluso-runtime zip
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tag="${{ needs.version.outputs.tag }}"
+          ./update/scripts/secluso_prepare_release_dir.sh --tag "$tag" --workdir release_work --artifact-dir "$MERGED_DIR"
+          ./update/scripts/secluso_build_bundle.sh --tag "$tag" --workdir release_work --artifact-dir "$MERGED_DIR"
+          out="${RUNNER_TEMP}/dist"; mkdir -p "$out"
+          cp "release_work/$tag/out/secluso-runtime-$tag.zip" "$out/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-runtime
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
   draft-release:
-    needs: [version, build-linux, sign-windows, build-sign-macos]
+    needs: [version, build-linux, sign-windows, build-sign-macos, bundle-runtime, mobile-aab]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -349,14 +447,22 @@ jobs:
           pattern: dist-*
           path: dist
           merge-multiple: true
-      - name: Generate checksums
+      - name: Assemble unified sha256sums
         shell: bash
         run: |
           set -Eeuo pipefail
-          cd dist
-          ls -la
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          ver="${{ needs.version.outputs.version }}"
+          tag="${{ needs.version.outputs.tag }}"
+          sums="dist/secluso-${tag}-sha256sums.txt"
+          h() { sha256sum "dist/$1" | awk '{print $1}'; }
+          {
+            printf '%s  %s\n' "$(h "secluso-runtime-${tag}.zip")"          "secluso-runtime-${tag}.zip"
+            printf '%s  %s\n' "$(h "Secluso-Deploy-${ver}-macos-arm64.app.zip")" "Secluso-Deploy-${ver}-macos-arm64.app.zip"
+            printf '%s  %s\n' "$(h "Secluso-Deploy-${ver}-linux-x64.AppImage")"  "Secluso-Deploy-${ver}-linux-x64.AppImage"
+            printf '%s  %s\n' "$(h "Secluso-Deploy-${ver}-windows-x64-setup.exe")" "Secluso-Deploy-${ver}-windows-x64-setup.exe"
+            printf '%s  %s\n' "${{ needs.mobile-aab.outputs.aab_sha256 }}" "${{ needs.mobile-aab.outputs.aab_name }}"
+          } > "$sums"
+          cat "$sums"
       - name: Create or update draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -364,12 +470,69 @@ jobs:
         run: |
           set -Eeuo pipefail
           tag="${{ needs.version.outputs.tag }}"
+          ver="${{ needs.version.outputs.version }}"
+          # binaries + deploy + the sums file (hash only for AAB & OS .wic)
+          assets=(
+            "dist/secluso-runtime-${tag}.zip"
+            "dist/Secluso-Deploy-${ver}-macos-arm64.app.zip"
+            "dist/Secluso-Deploy-${ver}-linux-x64.AppImage"
+            "dist/Secluso-Deploy-${ver}-windows-x64-setup.exe"
+            "dist/secluso-${tag}-sha256sums.txt"
+          )
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/* --clobber
+            gh release upload "$tag" "${assets[@]}" --clobber
           else
-            gh release create "$tag" dist/* \
+            gh release create "$tag" "${assets[@]}" \
               --draft \
               --target "${{ needs.version.outputs.sha }}" \
               --title "$tag" \
               --notes "TODO: verify reproducible builds + also GPG sign before publish"
           fi
+
+  # Build the mobile unsigned reproducible AAB and get its checksum..
+  # Triggers mobile_app's monthly-mobile-release workflow
+  # - builds the deterministic UNSIGNED AAB
+  # - publishes it to  draft release on THAT repo
+  # - returns the aab sha256 so this can also include it into SHA256SUMS
+  mobile-aab:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      aab_name: ${{ steps.fetch.outputs.aab_name }}
+      aab_sha256: ${{ steps.fetch.outputs.aab_sha256 }}
+    steps:
+      - name: Trigger, wait for, and fetch the mobile AAB
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.MOBILE_DISPATCH_TOKEN }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPO=privastead/mobile_app
+          WF=monthly-mobile-release.yml
+          VER="${{ needs.version.outputs.version }}"
+          SHA="${{ needs.version.outputs.sha }}"
+
+          before="$(gh run list --repo "$REPO" --workflow "$WF" -L 1 --json databaseId -q '.[0].databaseId // "0"')"
+          gh workflow run "$WF" --repo "$REPO" -f version="$VER" -f backend_sha="$SHA"
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            sleep 5
+            cand="$(gh run list --repo "$REPO" --workflow "$WF" -L 1 --json databaseId -q '.[0].databaseId // "0"')"
+            if [[ "$cand" != "$before" ]]; then run_id="$cand"; break; fi
+          done
+          [[ -n "$run_id" ]] || { echo "Could not find the triggered mobile run" >&2; exit 1; }
+          echo "Mobile run: $run_id, waiting..."
+          gh run watch "$run_id" --repo "$REPO" --exit-status
+
+          tag="v$VER"
+          gh release download "$tag" --repo "$REPO" --pattern 'app-release-unsigned-*.aab' --dir mobile_aab --clobber
+          aab="$(find mobile_aab -maxdepth 1 -name '*.aab' | head -n 1)"
+          [[ -n "$aab" ]] || { echo "AAB not found in mobile release $tag" >&2; exit 1; }
+          name="$(basename "$aab")"
+          sha256="$(sha256sum "$aab" | awk '{print $1}')"
+          echo "aab_name=$name" >> "$GITHUB_OUTPUT"
+          echo "aab_sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "$sha256  $name"
